@@ -27,3 +27,10 @@ jobs:
 
       - name: Test
         run: flutter test
+
+      - name: Compile Android plugin in a host app
+        run: |
+          flutter create --platforms=android /tmp/xprinter_host
+          cd /tmp/xprinter_host
+          flutter pub add xprinter_flutter --path "$GITHUB_WORKSPACE"
+          flutter build apk --debug
