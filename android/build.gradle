@@ -17,9 +17,6 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        flatDir {
-            dirs "libs"
-        }
     }
 }
 
@@ -42,8 +39,4 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-}
-
-dependencies {
-    implementation files("libs/printer-lib-3.5.8.aar")
 }
