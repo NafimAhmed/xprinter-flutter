@@ -1,5 +1,5 @@
 name: xprinter_flutter
-description: Flutter plugin for XPrinter label and POS printers using the native Android XPrinter SDK. Supports Bluetooth, TCP/IP, USB, Serial, TSPL, ZPL, CPCL, raw commands, QR codes and barcodes.
+description: Direct Android printing for XPrinter label and POS printers over Bluetooth, TCP/IP, and USB with TSPL, ZPL, CPCL, and ESC/POS support.
 version: 0.1.0
 homepage: https://github.com/NafimAhmed/xprinter-flutter
 repository: https://github.com/NafimAhmed/xprinter-flutter
