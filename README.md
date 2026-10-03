@@ -1,26 +1,37 @@
 # xprinter_flutter
 
-Android Flutter plugin for direct XPrinter printing without opening an external print app or Android print dialog.
+Direct Android printing for XPrinter-compatible label and POS printers from Flutter.
 
-The plugin wraps the XPrinter Android SDK 3.5.8 and exposes Bluetooth, TCP/IP, USB and serial connections plus TSPL label printing, raw ZPL/CPCL commands and basic ESC/POS printing.
+`xprinter_flutter` talks directly to the printer over Bluetooth SPP, TCP/IP, or USB. It does not require the XPrinter "Label Printer" Android app and it does not use the Android system print dialog.
 
 ## Features
 
-- Bluetooth paired printers and discovery
-- Bluetooth direct connection
-- TCP/IP / Wi-Fi / Ethernet direct connection
-- USB direct connection
-- Serial connection
-- TSPL labels: size, gap, speed, density, direction and reference
-- TSPL text, barcode, QR code, box, bar and bitmap elements
-- Raw TSPL / ZPL / CPCL / byte commands
-- Printer status, serial number and firmware query
+- Android 5.0+ (`minSdk 21`)
+- Bluetooth paired-device listing and discovery
+- Direct Bluetooth SPP connection
+- Direct TCP/IP / Wi-Fi / Ethernet connection (default port `9100`)
+- Direct USB bulk connection with Android USB permission handling
+- Structured TSPL label printing
+  - label size and gap
+  - speed and density
+  - direction and reference
+  - text
+  - Code 128 and other printer-supported barcodes
+  - QR codes
+  - boxes and bars
+  - multiple copies
+- Raw TSPL commands
+- Raw ZPL commands
+- Raw CPCL commands
+- Arbitrary raw byte printing
 - Basic ESC/POS text and QR printing
-- No external Label Printer app required
-- No Android system print dialog
-- Android 5.0+ (minSdk 21)
+- Connection event stream
+- No external printing application
+- No system print preview/dialog for Bluetooth or TCP/IP printing
 
 ## Install
+
+From GitHub:
 
 ```yaml
 dependencies:
@@ -29,31 +40,49 @@ dependencies:
       url: https://github.com/NafimAhmed/xprinter-flutter.git
 ```
 
-The repository currently includes `printer-lib-3.5.8.aar` under `android/libs/` because the plugin is a wrapper around that SDK. Review the vendor's SDK redistribution terms before publishing this package to pub.dev or redistributing the AAR.
+Then:
 
-## Bluetooth permissions
-
-Call once before Bluetooth scan/connect:
-
-```dart
-final printer = XPrinterFlutter.instance;
-final granted = await printer.requestBluetoothPermissions();
+```bash
+flutter pub get
 ```
 
-Android 12+ requests `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT`. The plugin marks scanning as `neverForLocation`; location permission is only used for Bluetooth discovery on Android 6-11.
-
-## Connect via Bluetooth
+## Quick start
 
 ```dart
-final printer = XPrinterFlutter.instance;
+import 'package:xprinter_flutter/xprinter_flutter.dart';
 
-await printer.requestBluetoothPermissions();
+final printer = XPrinterFlutter.instance;
+```
+
+### Bluetooth
+
+Request the required Bluetooth permission:
+
+```dart
+final granted = await printer.requestBluetoothPermissions();
+
+if (!granted) {
+  return;
+}
+```
+
+Get already paired devices:
+
+```dart
 final devices = await printer.getBondedBluetoothDevices();
 
+for (final device in devices) {
+  print('${device.name} - ${device.address}');
+}
+```
+
+Connect:
+
+```dart
 await printer.connectBluetooth(devices.first.address);
 ```
 
-For active discovery:
+Active discovery is also available:
 
 ```dart
 final subscription = printer.bluetoothScanResults.listen((device) {
@@ -61,30 +90,44 @@ final subscription = printer.bluetoothScanResults.listen((device) {
 });
 
 await printer.startBluetoothScan();
+
+// Later:
+await printer.stopBluetoothScan();
+await subscription.cancel();
 ```
 
-## Connect via Wi-Fi / Ethernet
+### Wi-Fi / Ethernet
+
+Most network label printers listen on TCP port `9100`:
 
 ```dart
 await printer.connectNetwork('192.168.1.100');
 ```
 
-Custom port:
+Or use another port:
 
 ```dart
-await printer.connectNetwork('192.168.1.100', port: 9100);
+await printer.connectNetwork(
+  '192.168.1.100',
+  port: 9100,
+);
 ```
 
-## Connect via USB
+### USB
+
+List compatible USB devices with a bulk OUT endpoint:
 
 ```dart
-final usb = await printer.getUsbDevices();
-await printer.connectUsb(usb.first);
+final devices = await printer.getUsbDevices();
+
+if (devices.isNotEmpty) {
+  await printer.connectUsb(devices.first);
+}
 ```
 
-The vendor SDK may show the Android USB permission dialog the first time a USB device is accessed. Bluetooth and TCP/IP printing can run without a print dialog after permission/connection setup.
+Android may show its USB-device permission prompt the first time the app accesses a USB printer. That prompt is Android's hardware permission prompt, not a print dialog.
 
-## Print a TSPL label
+## Structured TSPL label
 
 ```dart
 await printer.printTsplLabel(
@@ -93,6 +136,7 @@ await printer.printTsplLabel(
     heightMm: 40,
     gapMm: 2,
     density: 8,
+    copies: 1,
     elements: [
       TsplText(
         x: 20,
@@ -104,24 +148,36 @@ await printer.printTsplLabel(
         x: 20,
         y: 70,
         data: 'ITEM=100245|QTY=24',
+        cellWidth: 4,
       ),
       TsplBarcode(
         x: 180,
         y: 70,
         data: '100245',
         barcodeType: '128',
+        height: 70,
+      ),
+      TsplText(
+        x: 180,
+        y: 160,
+        text: 'Qty: 24',
       ),
     ],
   ),
 );
 ```
 
+TSPL element coordinates are printer dots. Label width, height and gap are in millimetres.
+
 ## Raw TSPL
+
+Use this when you need a command that is not represented by the structured API:
 
 ```dart
 await printer.printTsplRaw('''
 SIZE 60 mm,40 mm
 GAP 2 mm,0 mm
+DENSITY 8
 CLS
 TEXT 20,20,"3",0,1,1,"Express ERP"
 QRCODE 20,70,M,5,A,0,"ITEM-100245"
@@ -129,23 +185,81 @@ PRINT 1,1
 ''');
 ```
 
-## Raw ZPL / CPCL
+## Raw ZPL
 
 ```dart
-await printer.printZplRaw('^XA^FO30,30^ADN,36,20^FDExpress ERP^FS^XZ');
-await printer.printCpclRaw('! 0 200 200 300 1\r\nTEXT 4 0 30 40 Express ERP\r\nFORM\r\nPRINT\r\n');
+await printer.printZplRaw(
+  '^XA^FO30,30^ADN,36,20^FDExpress ERP^FS^XZ',
+);
 ```
 
-## Printer status
+## Raw CPCL
 
 ```dart
-final status = await printer.getTsplStatus();
-if (status.isReady) {
-  print('Ready');
-}
+await printer.printCpclRaw(
+  '! 0 200 200 300 1\r\n'
+  'TEXT 4 0 30 40 Express ERP\r\n'
+  'FORM\r\n'
+  'PRINT\r\n',
+);
 ```
 
-TSPL status bits exposed by `XPrinterStatus` include `headOpen`, `paperJam`, `outOfPaper`, `outOfRibbon`, `paused`, and `printing`.
+## Raw bytes
+
+```dart
+await printer.printRaw(bytes);
+```
+
+## ESC/POS
+
+Text:
+
+```dart
+await printer.printPosText(
+  'Express ERP\nGRN: 100001',
+  feedLines: 2,
+  cut: false,
+);
+```
+
+QR:
+
+```dart
+await printer.printPosQr(
+  'GRN=100001',
+  feedLines: 2,
+);
+```
+
+## Test print
+
+After connecting:
+
+```dart
+await printer.testPrint(
+  widthMm: 60,
+  heightMm: 40,
+);
+```
+
+## Connection state
+
+```dart
+final connected = await printer.isConnected();
+final info = await printer.getConnectionInfo();
+```
+
+Connection changes can also be observed:
+
+```dart
+printer.connectionEvents.listen((event) {
+  print(
+    'connected=${event.connected}, '
+    'info=${event.info}, '
+    'message=${event.message}',
+  );
+});
+```
 
 ## Express ERP example
 
@@ -156,16 +270,45 @@ Future<void> printGrnLabel({
   required String itemCode,
   required double qty,
 }) async {
-  await XPrinterFlutter.instance.printTsplLabel(
+  final printer = XPrinterFlutter.instance;
+
+  if (!await printer.isConnected()) {
+    // Reconnect to the MAC/IP saved by your ERP before printing.
+    throw StateError('Printer is not connected');
+  }
+
+  await printer.printTsplLabel(
     TsplLabel(
       widthMm: 60,
       heightMm: 40,
+      gapMm: 2,
+      density: 8,
       elements: [
-        const TsplText(x: 20, y: 15, text: 'EXPRESS ERP'),
-        TsplText(x: 20, y: 50, text: 'GRN: $grnNo'),
-        TsplText(x: 20, y: 80, text: 'PO: $poNo'),
-        TsplText(x: 20, y: 110, text: 'Item: $itemCode'),
-        TsplText(x: 20, y: 140, text: 'Qty: $qty'),
+        const TsplText(
+          x: 20,
+          y: 15,
+          text: 'EXPRESS ERP',
+        ),
+        TsplText(
+          x: 20,
+          y: 50,
+          text: 'GRN: $grnNo',
+        ),
+        TsplText(
+          x: 20,
+          y: 80,
+          text: 'PO: $poNo',
+        ),
+        TsplText(
+          x: 20,
+          y: 110,
+          text: 'Item: $itemCode',
+        ),
+        TsplText(
+          x: 20,
+          y: 140,
+          text: 'Qty: $qty',
+        ),
         TsplQrCode(
           x: 300,
           y: 40,
@@ -178,13 +321,53 @@ Future<void> printGrnLabel({
 }
 ```
 
-## Notes
+This allows a flow such as:
 
-- XPrinter models differ in firmware and supported command languages. Use TSPL only on a TSPL-compatible label printer; use ZPL/CPCL only when your model supports them.
-- Coordinate units in TSPL are printer dots, while label size/gap are configured in millimetres.
-- For stable production printing, save the printer MAC/IP in your app and reconnect when `isConnected` is false.
-- USB permission is controlled by Android and may require user approval when the device is first connected.
+```text
+Express ERP
+    ↓
+API success
+    ↓
+Build label
+    ↓
+xprinter_flutter
+    ↓
+Bluetooth / Wi-Fi / USB
+    ↓
+XPrinter
+```
+
+## Android permissions
+
+On Android 12 and newer, Bluetooth uses:
+
+- `BLUETOOTH_SCAN`
+- `BLUETOOTH_CONNECT`
+
+The scan permission is declared with `neverForLocation`, so the plugin does not request location permission on Android 12+.
+
+On Android 6 through Android 11, Android's classic Bluetooth discovery API requires location permission. The plugin limits `ACCESS_FINE_LOCATION` to SDK 30 and below.
+
+TCP/IP printing only requires network access.
+
+## Compatibility
+
+The transport layer is generic, but the command language still has to be supported by your printer firmware.
+
+- Use TSPL with TSPL/TSPL2-compatible XPrinter label printers.
+- Use ZPL only on models/firmware that support ZPL.
+- Use CPCL only on models/firmware that support CPCL.
+- Use ESC/POS helpers with compatible POS/receipt printers.
+
+The implementation was designed against the APIs and command examples supplied with XPrinter Android SDK 3.5.8, but **no vendor AAR or proprietary binary is bundled in this repository**.
+
+## Current v0.1 limitations
+
+- Android only.
+- Serial-port transport is not included yet.
+- Vendor-specific status, firmware-version and serial-number queries are not included yet.
+- Structured TSPL bitmap/image elements are not included yet. Raw printer commands remain available for model-specific functionality.
 
 ## License
 
-The Dart/Kotlin wrapper source in this repository is MIT licensed. The bundled XPrinter SDK/AAR is third-party vendor software and is **not** relicensed under MIT. See `THIRD_PARTY_NOTICES.md`.
+The plugin source is MIT licensed. XPrinter names, manuals, firmware and SDKs remain the property of their respective owners. No XPrinter SDK binary is redistributed by this package.
