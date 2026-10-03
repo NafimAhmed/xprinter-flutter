@@ -1,7 +1,4 @@
-import 'dart:convert';
-import 'dart:typed_data';
-
-enum XPrinterConnectionType { bluetooth, ethernet, usb, serial }
+enum XPrinterConnectionType { bluetooth, ethernet, usb }
 
 class XPrinterDevice {
   const XPrinterDevice({
@@ -44,19 +41,6 @@ class XPrinterConnectionEvent {
         info: map['info'] as String?,
         message: map['message'] as String?,
       );
-}
-
-class XPrinterStatus {
-  const XPrinterStatus(this.code);
-  final int code;
-
-  bool get isReady => code == 0;
-  bool get headOpen => (code & 1) == 1;
-  bool get paperJam => (code & 2) == 2;
-  bool get outOfPaper => (code & 4) == 4;
-  bool get outOfRibbon => (code & 8) == 8;
-  bool get paused => (code & 16) == 16;
-  bool get printing => (code & 32) == 32;
 }
 
 abstract class TsplElement {
@@ -212,35 +196,6 @@ class TsplBar extends TsplElement {
         'y': y,
         'width': width,
         'height': height,
-      };
-}
-
-class TsplImage extends TsplElement {
-  const TsplImage({
-    required this.x,
-    required this.y,
-    required this.imageBytes,
-    this.width = 576,
-    this.mode = 0,
-    this.algorithm = 'threshold',
-  });
-
-  final int x;
-  final int y;
-  final Uint8List imageBytes;
-  final int width;
-  final int mode;
-  final String algorithm;
-
-  @override
-  Map<String, Object?> toMap() => {
-        'type': 'image',
-        'x': x,
-        'y': y,
-        'base64': base64Encode(imageBytes),
-        'width': width,
-        'mode': mode,
-        'algorithm': algorithm,
       };
 }
 
