@@ -2,19 +2,25 @@ package com.nafimahmed.xprinter_flutter
 
 import android.Manifest
 import android.app.Activity
+import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothSocket
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.graphics.BitmapFactory
+import android.hardware.usb.UsbConstants
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbDeviceConnection
+import android.hardware.usb.UsbEndpoint
+import android.hardware.usb.UsbInterface
+import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.util.Base64
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -22,69 +28,66 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.PluginRegistry
-import net.posprinter.IDeviceConnection
-import net.posprinter.POSConnect
-import net.posprinter.POSPrinter
-import net.posprinter.TSPLPrinter
-import net.posprinter.model.AlgorithmType
-import java.util.concurrent.atomic.AtomicBoolean
+import java.io.ByteArrayOutputStream
+import java.io.Closeable
+import java.io.OutputStream
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.util.UUID
+import java.util.concurrent.Executors
 
 class XprinterFlutterPlugin : FlutterPlugin,
     MethodChannel.MethodCallHandler,
     ActivityAware,
     PluginRegistry.RequestPermissionsResultListener {
 
-    private lateinit var applicationContext: Context
-    private lateinit var methodChannel: MethodChannel
-    private lateinit var scanChannel: EventChannel
-    private lateinit var connectionChannel: EventChannel
+    private lateinit var context: Context
+    private lateinit var methods: MethodChannel
+    private lateinit var scanEvents: EventChannel
+    private lateinit var connectionEvents: EventChannel
 
     private var activity: Activity? = null
     private var activityBinding: ActivityPluginBinding? = null
-
-    private var currentConnection: IDeviceConnection? = null
-    private var connectionType: String? = null
-    private var connectionInfo: String? = null
+    private var permissionResult: MethodChannel.Result? = null
 
     private var scanSink: EventChannel.EventSink? = null
     private var connectionSink: EventChannel.EventSink? = null
     private var scanReceiver: BroadcastReceiver? = null
-    private var permissionResult: MethodChannel.Result? = null
 
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private val executor = Executors.newSingleThreadExecutor()
+    private val main = Handler(Looper.getMainLooper())
 
-    private val bluetoothAdapter: BluetoothAdapter?
-        get() = (applicationContext.getSystemService(Context.BLUETOOTH_SERVICE)
-                as? BluetoothManager)?.adapter
+    private var transport: Transport? = null
+    private var connectionType: String? = null
+    private var connectionInfo: String? = null
+
+    private val bluetooth: BluetoothAdapter?
+        get() = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+
+    private val usb: UsbManager
+        get() = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        applicationContext = binding.applicationContext
-        POSConnect.init(applicationContext)
+        context = binding.applicationContext
+        methods = MethodChannel(binding.binaryMessenger, "xprinter_flutter/methods")
+        methods.setMethodCallHandler(this)
 
-        methodChannel =
-            MethodChannel(binding.binaryMessenger, "xprinter_flutter/methods")
-        methodChannel.setMethodCallHandler(this)
-
-        scanChannel =
-            EventChannel(binding.binaryMessenger, "xprinter_flutter/bluetooth_scan")
-        scanChannel.setStreamHandler(object : EventChannel.StreamHandler {
+        scanEvents = EventChannel(binding.binaryMessenger, "xprinter_flutter/bluetooth_scan")
+        scanEvents.setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                 scanSink = events
             }
-
             override fun onCancel(arguments: Any?) {
                 scanSink = null
-                stopBluetoothScanInternal()
+                stopScan()
             }
         })
 
-        connectionChannel =
-            EventChannel(binding.binaryMessenger, "xprinter_flutter/connection_events")
-        connectionChannel.setStreamHandler(object : EventChannel.StreamHandler {
+        connectionEvents = EventChannel(binding.binaryMessenger, "xprinter_flutter/connection_events")
+        connectionEvents.setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                 connectionSink = events
             }
-
             override fun onCancel(arguments: Any?) {
                 connectionSink = null
             }
@@ -92,406 +95,351 @@ class XprinterFlutterPlugin : FlutterPlugin,
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        stopBluetoothScanInternal()
-        currentConnection?.close()
-        currentConnection = null
-        methodChannel.setMethodCallHandler(null)
-        scanChannel.setStreamHandler(null)
-        connectionChannel.setStreamHandler(null)
-        POSConnect.exit()
+        stopScan()
+        closeTransport()
+        executor.shutdownNow()
+        methods.setMethodCallHandler(null)
+        scanEvents.setStreamHandler(null)
+        connectionEvents.setStreamHandler(null)
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         try {
             when (call.method) {
-                "platformVersion" ->
-                    result.success("Android ${Build.VERSION.RELEASE}")
-
-                "requestBluetoothPermissions" ->
-                    requestBluetoothPermissions(result)
-
-                "getBondedBluetoothDevices" ->
-                    result.success(getBondedDevices())
-
-                "startBluetoothScan" ->
-                    result.success(startBluetoothScanInternal())
-
-                "stopBluetoothScan" -> {
-                    stopBluetoothScanInternal()
-                    result.success(null)
-                }
-
-                "getUsbDevices" ->
-                    result.success(POSConnect.getUsbDevices(applicationContext))
-
-                "getSerialPorts" ->
-                    result.success(POSConnect.getSerialPort())
-
-                "connectBluetooth" -> {
-                    val address = call.argument<String>("address")
-                        ?: return result.error(
-                            "bad_args",
-                            "address is required",
-                            null,
-                        )
-                    connect(
-                        POSConnect.DEVICE_TYPE_BLUETOOTH,
-                        address,
-                        "bluetooth",
-                        result,
-                    )
-                }
-
-                "connectNetwork" -> {
-                    val host = call.argument<String>("host")
-                        ?: return result.error(
-                            "bad_args",
-                            "host is required",
-                            null,
-                        )
-                    val port = call.argument<Int>("port")
-                    val info = if (port == null) host else "$host,$port"
-                    connect(
-                        POSConnect.DEVICE_TYPE_ETHERNET,
-                        info,
-                        "ethernet",
-                        result,
-                    )
-                }
-
-                "connectUsb" -> {
-                    val path = call.argument<String>("path")
-                        ?: return result.error(
-                            "bad_args",
-                            "path is required",
-                            null,
-                        )
-                    connect(
-                        POSConnect.DEVICE_TYPE_USB,
-                        path,
-                        "usb",
-                        result,
-                    )
-                }
-
-                "connectSerial" -> {
-                    val port = call.argument<String>("port")
-                        ?: return result.error(
-                            "bad_args",
-                            "port is required",
-                            null,
-                        )
-                    val baudRate = call.argument<Int>("baudRate") ?: 9600
-                    connect(
-                        POSConnect.DEVICE_TYPE_SERIAL,
-                        "$port,$baudRate",
-                        "serial",
-                        result,
-                    )
-                }
-
-                "disconnect" -> {
-                    currentConnection?.close()
-                    currentConnection = null
-                    connectionType = null
-                    connectionInfo = null
-                    result.success(null)
-                }
-
-                "isConnected" ->
-                    result.success(currentConnection?.isConnect == true)
-
-                "getConnectionInfo" ->
-                    result.success(
-                        mapOf(
-                            "connected" to (currentConnection?.isConnect == true),
-                            "type" to connectionType,
-                            "info" to connectionInfo,
-                        )
-                    )
-
+                "platformVersion" -> result.success("Android " + Build.VERSION.RELEASE)
+                "requestBluetoothPermissions" -> requestBluetoothPermissions(result)
+                "getBondedBluetoothDevices" -> result.success(bondedDevices())
+                "startBluetoothScan" -> result.success(startScan())
+                "stopBluetoothScan" -> { stopScan(); result.success(null) }
+                "getUsbDevices" -> result.success(usbDevices())
+                "getSerialPorts" -> result.success(emptyList<String>())
+                "connectBluetooth" -> connectBluetooth(
+                    call.argument<String>("address") ?: return result.error("bad_args", "address is required", null),
+                    result
+                )
+                "connectNetwork" -> connectNetwork(
+                    call.argument<String>("host") ?: return result.error("bad_args", "host is required", null),
+                    call.argument<Int>("port") ?: 9100,
+                    result
+                )
+                "connectUsb" -> connectUsb(
+                    call.argument<String>("path") ?: return result.error("bad_args", "path is required", null),
+                    result
+                )
+                "connectSerial" -> result.error("unsupported", "Serial transport is not implemented yet", null)
+                "disconnect" -> { closeTransport(); emit(false, 0, null, "Disconnected"); result.success(null) }
+                "isConnected" -> result.success(transport?.isConnected == true)
+                "getConnectionInfo" -> result.success(mapOf(
+                    "connected" to (transport?.isConnected == true),
+                    "type" to connectionType,
+                    "info" to connectionInfo
+                ))
                 "printRaw" -> {
                     val data = call.argument<ByteArray>("data")
-                        ?: return result.error(
-                            "bad_args",
-                            "data is required",
-                            null,
-                        )
-                    requireConnection().sendData(data)
-                    result.success(null)
+                        ?: return result.error("bad_args", "data is required", null)
+                    writeAsync(data, result)
                 }
-
-                "printTsplLabel" ->
-                    printTsplLabel(call, result)
-
-                "testPrint" ->
-                    testPrint(call, result)
-
-                "getTsplStatus" ->
-                    getTsplStatus(call, result)
-
-                "getSerialNumber" ->
-                    getSerialNumber(result)
-
-                "getFirmwareVersion" ->
-                    getFirmwareVersion(result)
-
-                "printPosText" ->
-                    printPosText(call, result)
-
-                "printPosQr" ->
-                    printPosQr(call, result)
-
+                "printTsplLabel" -> writeAsync(buildTspl(call), result)
+                "testPrint" -> {
+                    val width = call.argument<Number>("widthMm")?.toDouble() ?: 60.0
+                    val height = call.argument<Number>("heightMm")?.toDouble() ?: 40.0
+                    val cmd = "SIZE " + fmt(width) + " mm," + fmt(height) + " mm\r\n" +
+                        "GAP 2 mm,0 mm\r\nDENSITY 8\r\nCLS\r\n" +
+                        "TEXT 20,20,\"3\",0,1,1,\"xprinter_flutter\"\r\n" +
+                        "QRCODE 20,70,M,5,A,0,\"https://github.com/NafimAhmed/xprinter-flutter\"\r\n" +
+                        "PRINT 1,1\r\n"
+                    writeAsync(cmd.toByteArray(Charsets.UTF_8), result)
+                }
+                "printPosText" -> writeAsync(
+                    escPosText(
+                        call.argument<String>("text") ?: "",
+                        call.argument<Int>("feedLines") ?: 1,
+                        call.argument<Boolean>("cut") == true
+                    ),
+                    result
+                )
+                "printPosQr" -> writeAsync(
+                    escPosQr(
+                        call.argument<String>("data") ?: "",
+                        call.argument<Int>("feedLines") ?: 1,
+                        call.argument<Boolean>("cut") == true
+                    ),
+                    result
+                )
+                "getTsplStatus", "getSerialNumber", "getFirmwareVersion" ->
+                    result.error("unsupported", "Vendor-specific query APIs are not exposed in the direct transport build yet", null)
                 else -> result.notImplemented()
             }
         } catch (e: SecurityException) {
             result.error("permission_denied", e.message, null)
-        } catch (e: IllegalStateException) {
-            result.error("not_connected", e.message, null)
         } catch (e: Exception) {
-            result.error(
-                "xprinter_error",
-                e.message ?: e.javaClass.simpleName,
-                null,
-            )
+            result.error("xprinter_error", e.message ?: e.javaClass.simpleName, null)
         }
     }
 
-    private fun requireConnection(): IDeviceConnection =
-        currentConnection?.takeIf { it.isConnect }
-            ?: throw IllegalStateException("No XPrinter is connected")
-
-    private fun connect(
-        deviceType: Int,
-        info: String,
-        typeName: String,
-        result: MethodChannel.Result,
-    ) {
-        currentConnection?.close()
-
-        val connection = POSConnect.createDevice(deviceType)
-        currentConnection = connection
-        connectionType = typeName
-        connectionInfo = info
-
-        val completed = AtomicBoolean(false)
-
-        connection.connect(info) { code, connectInfo, message ->
-            val connected = code == POSConnect.CONNECT_SUCCESS
-
-            if (connected) {
-                connectionInfo = connectInfo ?: info
-            }
-
-            if (code == POSConnect.CONNECT_INTERRUPT ||
-                code == POSConnect.CONNECT_FAIL
-            ) {
-                if (currentConnection === connection) {
-                    connectionType = null
-                    connectionInfo = null
-                }
-            }
-
-            mainHandler.post {
-                connectionSink?.success(
-                    mapOf(
-                        "code" to code,
-                        "connected" to connected,
-                        "info" to connectInfo,
-                        "message" to message,
-                    )
-                )
-
-                when (code) {
-                    POSConnect.CONNECT_SUCCESS -> {
-                        if (completed.compareAndSet(false, true)) {
-                            result.success(null)
-                        }
-                    }
-
-                    POSConnect.CONNECT_FAIL,
-                    POSConnect.CONNECT_INTERRUPT -> {
-                        if (completed.compareAndSet(false, true)) {
-                            result.error(
-                                "connect_failed",
-                                message ?: "Unable to connect to printer",
-                                code,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private fun getBondedDevices(): List<Map<String, Any?>> {
+    private fun connectBluetooth(address: String, result: MethodChannel.Result) {
         if (!hasBluetoothPermissions()) {
-            throw SecurityException("Bluetooth permissions are not granted")
-        }
-
-        return bluetoothAdapter
-            ?.bondedDevices
-            ?.map { device -> deviceMap(device, true, null) }
-            ?: emptyList()
-    }
-
-    private fun deviceMap(
-        device: BluetoothDevice,
-        bonded: Boolean,
-        rssi: Int?,
-    ): Map<String, Any?> =
-        mapOf(
-            "event" to "device",
-            "name" to (device.name ?: "Unknown"),
-            "address" to device.address,
-            "bonded" to bonded,
-            "rssi" to rssi,
-        )
-
-    private fun hasBluetoothPermissions(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            applicationContext.checkSelfPermission(
-                Manifest.permission.BLUETOOTH_SCAN
-            ) == PackageManager.PERMISSION_GRANTED &&
-                applicationContext.checkSelfPermission(
-                    Manifest.permission.BLUETOOTH_CONNECT
-                ) == PackageManager.PERMISSION_GRANTED
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            applicationContext.checkSelfPermission(
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
-    }
-
-    private fun requestBluetoothPermissions(result: MethodChannel.Result) {
-        if (hasBluetoothPermissions()) {
-            result.success(true)
+            result.error("permission_denied", "Bluetooth permissions are not granted", null)
             return
         }
-
-        val currentActivity = activity ?: run {
-            result.error(
-                "no_activity",
-                "An Android Activity is required to request Bluetooth permissions",
-                null,
-            )
-            return
-        }
-
-        if (permissionResult != null) {
-            result.error(
-                "request_in_progress",
-                "A Bluetooth permission request is already in progress",
-                null,
-            )
-            return
-        }
-
-        val permissions = when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-                arrayOf(
-                    Manifest.permission.BLUETOOTH_SCAN,
-                    Manifest.permission.BLUETOOTH_CONNECT,
-                )
-
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ->
-                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
-
-            else -> emptyArray()
-        }
-
-        if (permissions.isEmpty()) {
-            result.success(true)
-            return
-        }
-
-        permissionResult = result
-        currentActivity.requestPermissions(
-            permissions,
-            REQUEST_BLUETOOTH_PERMISSIONS,
-        )
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ): Boolean {
-        if (requestCode != REQUEST_BLUETOOTH_PERMISSIONS) {
-            return false
-        }
-
-        val granted =
-            grantResults.isNotEmpty() &&
-                grantResults.all { it == PackageManager.PERMISSION_GRANTED }
-
-        permissionResult?.success(granted)
-        permissionResult = null
-        return true
-    }
-
-    private fun startBluetoothScanInternal(): Boolean {
-        if (!hasBluetoothPermissions()) {
-            throw SecurityException("Bluetooth permissions are not granted")
-        }
-
-        val adapter =
-            bluetoothAdapter
-                ?: throw IllegalStateException(
-                    "Bluetooth is not supported on this device"
-                )
-
+        val adapter = bluetooth ?: return result.error("bluetooth_unavailable", "Bluetooth is unavailable", null)
         if (!adapter.isEnabled) {
-            throw IllegalStateException("Bluetooth is disabled")
+            result.error("bluetooth_disabled", "Bluetooth is disabled", null)
+            return
         }
 
-        stopBluetoothScanInternal()
-
-        adapter.bondedDevices.forEach {
-            scanSink?.success(deviceMap(it, true, null))
+        executor.execute {
+            try {
+                closeTransport()
+                adapter.cancelDiscovery()
+                val device = adapter.getRemoteDevice(address)
+                val socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                socket.connect()
+                transport = BluetoothTransport(socket)
+                connectionType = "bluetooth"
+                connectionInfo = address
+                main.post { emit(true, 1, address, "Connected"); result.success(null) }
+            } catch (e: Exception) {
+                closeTransport()
+                main.post {
+                    emit(false, -1, address, e.message)
+                    result.error("connect_failed", e.message ?: "Bluetooth connection failed", null)
+                }
+            }
         }
+    }
+
+    private fun connectNetwork(host: String, port: Int, result: MethodChannel.Result) {
+        executor.execute {
+            try {
+                closeTransport()
+                val socket = Socket()
+                socket.connect(InetSocketAddress(host, port), 5000)
+                socket.tcpNoDelay = true
+                transport = TcpTransport(socket)
+                connectionType = "ethernet"
+                connectionInfo = host + "," + port
+                main.post { emit(true, 1, connectionInfo, "Connected"); result.success(null) }
+            } catch (e: Exception) {
+                closeTransport()
+                main.post {
+                    emit(false, -1, host + "," + port, e.message)
+                    result.error("connect_failed", e.message ?: "Network connection failed", null)
+                }
+            }
+        }
+    }
+
+    private fun connectUsb(path: String, result: MethodChannel.Result) {
+        val device = usb.deviceList.values.firstOrNull { it.deviceName == path }
+            ?: return result.error("usb_not_found", "USB printer not found: " + path, null)
+
+        if (usb.hasPermission(device)) {
+            openUsb(device, result)
+            return
+        }
+
+        val action = context.packageName + ".XPRINTER_USB_PERMISSION"
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, intent: Intent?) {
+                if (intent?.action != action) return
+                try { context.unregisterReceiver(this) } catch (_: Exception) {}
+
+                val received = if (Build.VERSION.SDK_INT >= 33) {
+                    intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                }
+
+                val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                if (granted && received != null) {
+                    openUsb(received, result)
+                } else {
+                    result.error("permission_denied", "USB permission was denied", null)
+                }
+            }
+        }
+
+        val filter = IntentFilter(action)
+        if (Build.VERSION.SDK_INT >= 33) {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            context.registerReceiver(receiver, filter)
+        }
+
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+        val pending = PendingIntent.getBroadcast(context, 0, Intent(action), flags)
+        usb.requestPermission(device, pending)
+    }
+
+    private fun openUsb(device: UsbDevice, result: MethodChannel.Result) {
+        executor.execute {
+            try {
+                closeTransport()
+                val pair = findUsbOut(device)
+                    ?: throw IllegalStateException("No USB bulk OUT endpoint found")
+                val conn = usb.openDevice(device)
+                    ?: throw IllegalStateException("Unable to open USB printer")
+                if (!conn.claimInterface(pair.first, true)) {
+                    conn.close()
+                    throw IllegalStateException("Unable to claim USB interface")
+                }
+                transport = UsbTransport(conn, pair.first, pair.second)
+                connectionType = "usb"
+                connectionInfo = device.deviceName
+                main.post { emit(true, 1, device.deviceName, "Connected"); result.success(null) }
+            } catch (e: Exception) {
+                closeTransport()
+                main.post {
+                    emit(false, -1, device.deviceName, e.message)
+                    result.error("connect_failed", e.message ?: "USB connection failed", null)
+                }
+            }
+        }
+    }
+
+    private fun writeAsync(data: ByteArray, result: MethodChannel.Result) {
+        val t = transport?.takeIf { it.isConnected }
+            ?: return result.error("not_connected", "No printer is connected", null)
+
+        executor.execute {
+            try {
+                t.write(data)
+                main.post { result.success(null) }
+            } catch (e: Exception) {
+                main.post {
+                    emit(false, -2, connectionInfo, e.message)
+                    result.error("write_failed", e.message ?: "Printer write failed", null)
+                }
+            }
+        }
+    }
+
+    private fun buildTspl(call: MethodCall): ByteArray {
+        val width = call.argument<Number>("widthMm")?.toDouble() ?: 60.0
+        val height = call.argument<Number>("heightMm")?.toDouble() ?: 40.0
+        val gap = call.argument<Number>("gapMm")?.toDouble() ?: 2.0
+        val gapOffset = call.argument<Number>("gapOffsetMm")?.toDouble() ?: 0.0
+        val speed = call.argument<Number>("speed")?.toDouble() ?: 5.0
+        val density = call.argument<Int>("density") ?: 8
+        val direction = call.argument<Int>("direction") ?: 0
+        val referenceX = call.argument<Int>("referenceX") ?: 0
+        val referenceY = call.argument<Int>("referenceY") ?: 0
+        val copies = (call.argument<Int>("copies") ?: 1).coerceAtLeast(1)
+        val clear = call.argument<Boolean>("clearBeforePrint") ?: true
+        val offset = call.argument<Number>("offsetMm")?.toDouble()
+        val elements = call.argument<List<Map<String, Any?>>>("elements") ?: emptyList()
+
+        val out = StringBuilder()
+        out.append("SIZE ").append(fmt(width)).append(" mm,").append(fmt(height)).append(" mm\r\n")
+        out.append("GAP ").append(fmt(gap)).append(" mm,").append(fmt(gapOffset)).append(" mm\r\n")
+        if (offset != null) out.append("OFFSET ").append(fmt(offset)).append(" mm\r\n")
+        out.append("SPEED ").append(fmt(speed)).append("\r\n")
+        out.append("DENSITY ").append(density).append("\r\n")
+        out.append("DIRECTION ").append(direction).append("\r\n")
+        out.append("REFERENCE ").append(referenceX).append(",").append(referenceY).append("\r\n")
+        if (clear) out.append("CLS\r\n")
+
+        for (e in elements) {
+            when (e["type"] as? String) {
+                "text" -> out.append("TEXT ")
+                    .append(iv(e, "x")).append(",").append(iv(e, "y")).append(",")
+                    .append(q(sv(e, "font", "3"))).append(",")
+                    .append(iv(e, "rotation", 0)).append(",")
+                    .append(iv(e, "xScale", 1)).append(",")
+                    .append(iv(e, "yScale", 1)).append(",")
+                    .append(q(sv(e, "text"))).append("\r\n")
+
+                "barcode" -> out.append("BARCODE ")
+                    .append(iv(e, "x")).append(",").append(iv(e, "y")).append(",")
+                    .append(q(sv(e, "barcodeType", "128"))).append(",")
+                    .append(iv(e, "height", 80)).append(",")
+                    .append(iv(e, "readable", 2)).append(",")
+                    .append(iv(e, "rotation", 0)).append(",")
+                    .append(iv(e, "narrow", 2)).append(",")
+                    .append(iv(e, "wide", 2)).append(",")
+                    .append(q(sv(e, "data"))).append("\r\n")
+
+                "qrcode" -> out.append("QRCODE ")
+                    .append(iv(e, "x")).append(",").append(iv(e, "y")).append(",")
+                    .append(sv(e, "errorCorrection", "M")).append(",")
+                    .append(iv(e, "cellWidth", 5)).append(",")
+                    .append(sv(e, "mode", "A")).append(",")
+                    .append(iv(e, "rotation", 0)).append(",")
+                    .append(q(sv(e, "data"))).append("\r\n")
+
+                "box" -> out.append("BOX ")
+                    .append(iv(e, "x")).append(",").append(iv(e, "y")).append(",")
+                    .append(iv(e, "xEnd")).append(",").append(iv(e, "yEnd")).append(",")
+                    .append(iv(e, "thickness", 2)).append("\r\n")
+
+                "bar" -> out.append("BAR ")
+                    .append(iv(e, "x")).append(",").append(iv(e, "y")).append(",")
+                    .append(iv(e, "width")).append(",").append(iv(e, "height")).append("\r\n")
+            }
+        }
+
+        out.append("PRINT 1,").append(copies).append("\r\n")
+        return out.toString().toByteArray(Charsets.UTF_8)
+    }
+
+    private fun escPosText(text: String, feeds: Int, cut: Boolean): ByteArray =
+        ByteArrayOutputStream().apply {
+            write(byteArrayOf(0x1B, 0x40))
+            write(text.toByteArray(Charsets.UTF_8))
+            repeat(feeds.coerceAtLeast(0)) { write('\n'.code) }
+            if (cut) write(byteArrayOf(0x1D, 0x56, 0x42, 0x00))
+        }.toByteArray()
+
+    private fun escPosQr(data: String, feeds: Int, cut: Boolean): ByteArray {
+        val body = data.toByteArray(Charsets.UTF_8)
+        val len = body.size + 3
+        return ByteArrayOutputStream().apply {
+            write(byteArrayOf(0x1B, 0x40))
+            write(byteArrayOf(0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00))
+            write(byteArrayOf(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, 0x05))
+            write(byteArrayOf(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, 0x31))
+            write(byteArrayOf(0x1D, 0x28, 0x6B, (len and 0xFF).toByte(), ((len shr 8) and 0xFF).toByte(), 0x31, 0x50, 0x30))
+            write(body)
+            write(byteArrayOf(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30))
+            repeat(feeds.coerceAtLeast(0)) { write('\n'.code) }
+            if (cut) write(byteArrayOf(0x1D, 0x56, 0x42, 0x00))
+        }.toByteArray()
+    }
+
+    private fun bondedDevices(): List<Map<String, Any?>> {
+        if (!hasBluetoothPermissions()) throw SecurityException("Bluetooth permissions are not granted")
+        return bluetooth?.bondedDevices?.map { deviceMap(it, true, null) } ?: emptyList()
+    }
+
+    private fun startScan(): Boolean {
+        if (!hasBluetoothPermissions()) throw SecurityException("Bluetooth permissions are not granted")
+        val adapter = bluetooth ?: throw IllegalStateException("Bluetooth is unavailable")
+        if (!adapter.isEnabled) throw IllegalStateException("Bluetooth is disabled")
+
+        stopScan()
+        adapter.bondedDevices.forEach { scanSink?.success(deviceMap(it, true, null)) }
 
         scanReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
+            override fun onReceive(c: Context?, intent: Intent?) {
                 when (intent?.action) {
                     BluetoothDevice.ACTION_FOUND -> {
-                        val device =
-                            if (Build.VERSION.SDK_INT >= 33) {
-                                intent.getParcelableExtra(
-                                    BluetoothDevice.EXTRA_DEVICE,
-                                    BluetoothDevice::class.java,
-                                )
-                            } else {
-                                @Suppress("DEPRECATION")
-                                intent.getParcelableExtra(
-                                    BluetoothDevice.EXTRA_DEVICE
-                                )
-                            }
-
-                        val rssi =
-                            intent.getShortExtra(
-                                BluetoothDevice.EXTRA_RSSI,
-                                Short.MIN_VALUE,
-                            ).toInt()
-
-                        if (device != null) {
-                            scanSink?.success(
-                                deviceMap(
-                                    device,
-                                    device.bondState ==
-                                        BluetoothDevice.BOND_BONDED,
-                                    rssi,
-                                )
-                            )
+                        val d = if (Build.VERSION.SDK_INT >= 33) {
+                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                        }
+                        if (d != null) {
+                            val rssi = intent.getShortExtra(BluetoothDevice.EXTRA_RSSI, Short.MIN_VALUE).toInt()
+                            scanSink?.success(deviceMap(d, d.bondState == BluetoothDevice.BOND_BONDED, rssi))
                         }
                     }
-
                     BluetoothAdapter.ACTION_DISCOVERY_FINISHED ->
-                        scanSink?.success(
-                            mapOf("event" to "finished")
-                        )
+                        scanSink?.success(mapOf("event" to "finished"))
                 }
             }
         }
@@ -502,356 +450,182 @@ class XprinterFlutterPlugin : FlutterPlugin,
         }
 
         if (Build.VERSION.SDK_INT >= 33) {
-            applicationContext.registerReceiver(
-                scanReceiver,
-                filter,
-                Context.RECEIVER_NOT_EXPORTED,
-            )
+            context.registerReceiver(scanReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("DEPRECATION")
-            applicationContext.registerReceiver(
-                scanReceiver,
-                filter,
-            )
+            context.registerReceiver(scanReceiver, filter)
         }
 
-        if (adapter.isDiscovering) {
-            adapter.cancelDiscovery()
-        }
-
+        if (adapter.isDiscovering) adapter.cancelDiscovery()
         return adapter.startDiscovery()
     }
 
-    private fun stopBluetoothScanInternal() {
+    private fun stopScan() {
         try {
-            if (hasBluetoothPermissions()) {
-                bluetoothAdapter
-                    ?.takeIf { it.isDiscovering }
-                    ?.cancelDiscovery()
-            }
-        } catch (_: Exception) {
-        }
-
+            if (hasBluetoothPermissions()) bluetooth?.takeIf { it.isDiscovering }?.cancelDiscovery()
+        } catch (_: Exception) {}
         scanReceiver?.let {
-            try {
-                applicationContext.unregisterReceiver(it)
-            } catch (_: Exception) {
-            }
+            try { context.unregisterReceiver(it) } catch (_: Exception) {}
         }
-
         scanReceiver = null
     }
 
-    private fun printTsplLabel(
-        call: MethodCall,
-        result: MethodChannel.Result,
-    ) {
-        val connection = requireConnection()
+    private fun hasBluetoothPermissions(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+                context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        } else true
 
-        val width =
-            call.argument<Number>("widthMm")?.toDouble() ?: 60.0
-        val height =
-            call.argument<Number>("heightMm")?.toDouble() ?: 40.0
-        val gap =
-            call.argument<Number>("gapMm")?.toDouble() ?: 2.0
-        val gapOffset =
-            call.argument<Number>("gapOffsetMm")?.toDouble() ?: 0.0
-        val offset =
-            call.argument<Number>("offsetMm")?.toDouble()
-        val speed =
-            call.argument<Number>("speed")?.toDouble() ?: 5.0
-        val density =
-            call.argument<Int>("density") ?: 8
-        val direction =
-            call.argument<Int>("direction") ?: 0
-        val referenceX =
-            call.argument<Int>("referenceX") ?: 0
-        val referenceY =
-            call.argument<Int>("referenceY") ?: 0
-        val copies =
-            (call.argument<Int>("copies") ?: 1).coerceAtLeast(1)
-        val clearBeforePrint =
-            call.argument<Boolean>("clearBeforePrint") ?: true
-        val elements =
-            call.argument<List<Map<String, Any?>>>("elements")
-                ?: emptyList()
-
-        var printer =
-            TSPLPrinter(connection)
-                .sizeMm(width, height)
-                .gapMm(gap, gapOffset)
-                .speed(speed)
-                .density(density)
-                .direction(direction)
-                .reference(referenceX, referenceY)
-
-        if (offset != null) {
-            printer = printer.offsetMm(offset)
+    private fun requestBluetoothPermissions(result: MethodChannel.Result) {
+        if (hasBluetoothPermissions()) {
+            result.success(true)
+            return
         }
 
-        if (clearBeforePrint) {
-            printer = printer.cls()
+        val a = activity ?: return result.error("no_activity", "Activity is required", null)
+        if (permissionResult != null) {
+            result.error("request_in_progress", "Permission request already in progress", null)
+            return
         }
 
-        for (element in elements) {
-            when (element["type"] as? String) {
-                "text" ->
-                    printer.text(
-                        intValue(element, "x"),
-                        intValue(element, "y"),
-                        stringValue(element, "font", "3"),
-                        intValue(element, "rotation", 0),
-                        intValue(element, "xScale", 1),
-                        intValue(element, "yScale", 1),
-                        stringValue(element, "text"),
-                    )
+        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
 
-                "barcode" ->
-                    printer.barcode(
-                        intValue(element, "x"),
-                        intValue(element, "y"),
-                        stringValue(element, "barcodeType", "128"),
-                        intValue(element, "height", 80),
-                        intValue(element, "readable", 2),
-                        intValue(element, "rotation", 0),
-                        intValue(element, "narrow", 2),
-                        intValue(element, "wide", 2),
-                        stringValue(element, "data"),
-                    )
+        permissionResult = result
+        a.requestPermissions(permissions, REQUEST_BT)
+    }
 
-                "qrcode" ->
-                    printer.qrcode(
-                        intValue(element, "x"),
-                        intValue(element, "y"),
-                        stringValue(element, "errorCorrection", "M"),
-                        intValue(element, "cellWidth", 5),
-                        stringValue(element, "mode", "A"),
-                        intValue(element, "rotation", 0),
-                        stringValue(element, "data"),
-                    )
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ): Boolean {
+        if (requestCode != REQUEST_BT) return false
+        val ok = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+        permissionResult?.success(ok)
+        permissionResult = null
+        return true
+    }
 
-                "box" ->
-                    printer.box(
-                        intValue(element, "x"),
-                        intValue(element, "y"),
-                        intValue(element, "xEnd"),
-                        intValue(element, "yEnd"),
-                        intValue(element, "thickness", 2),
-                    )
+    private fun usbDevices(): List<String> =
+        usb.deviceList.values.filter { findUsbOut(it) != null }.map { it.deviceName }
 
-                "bar" ->
-                    printer.bar(
-                        intValue(element, "x"),
-                        intValue(element, "y"),
-                        intValue(element, "width"),
-                        intValue(element, "height"),
-                    )
-
-                "image" -> {
-                    val bytes =
-                        Base64.decode(
-                            stringValue(element, "base64"),
-                            Base64.DEFAULT,
-                        )
-                    val bitmap =
-                        BitmapFactory.decodeByteArray(
-                            bytes,
-                            0,
-                            bytes.size,
-                        )
-                            ?: throw IllegalArgumentException(
-                                "Invalid image data"
-                            )
-
-                    printer.bitmap(
-                        intValue(element, "x"),
-                        intValue(element, "y"),
-                        intValue(element, "mode", 0),
-                        intValue(element, "width", 576),
-                        bitmap,
-                        algorithm(element["algorithm"] as? String),
-                    )
+    private fun findUsbOut(device: UsbDevice): Pair<UsbInterface, UsbEndpoint>? {
+        for (i in 0 until device.interfaceCount) {
+            val intf = device.getInterface(i)
+            for (j in 0 until intf.endpointCount) {
+                val ep = intf.getEndpoint(j)
+                if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK &&
+                    ep.direction == UsbConstants.USB_DIR_OUT) {
+                    return intf to ep
                 }
             }
         }
-
-        printer.print(copies)
-        result.success(null)
+        return null
     }
 
-    private fun testPrint(
-        call: MethodCall,
-        result: MethodChannel.Result,
-    ) {
-        val width =
-            call.argument<Number>("widthMm")?.toDouble() ?: 60.0
-        val height =
-            call.argument<Number>("heightMm")?.toDouble() ?: 40.0
+    private fun deviceMap(device: BluetoothDevice, bonded: Boolean, rssi: Int?) =
+        mapOf(
+            "event" to "device",
+            "name" to (device.name ?: "Unknown"),
+            "address" to device.address,
+            "bonded" to bonded,
+            "rssi" to rssi
+        )
 
-        TSPLPrinter(requireConnection())
-            .sizeMm(width, height)
-            .gapMm(2.0, 0.0)
-            .density(8)
-            .cls()
-            .text(
-                20,
-                20,
-                "3",
-                0,
-                1,
-                1,
-                "xprinter_flutter",
-            )
-            .qrcode(
-                20,
-                70,
-                "M",
-                5,
-                "A",
-                0,
-                "https://github.com/NafimAhmed/xprinter-flutter",
-            )
-            .print(1)
-
-        result.success(null)
+    private fun emit(connected: Boolean, code: Int, info: String?, message: String?) {
+        connectionSink?.success(mapOf(
+            "code" to code,
+            "connected" to connected,
+            "info" to info,
+            "message" to message
+        ))
     }
 
-    private fun getTsplStatus(
-        call: MethodCall,
-        result: MethodChannel.Result,
-    ) {
-        val timeout =
-            call.argument<Int>("timeoutMs") ?: 1500
-
-        TSPLPrinter(requireConnection())
-            .printerStatus(timeout) { code ->
-                mainHandler.post {
-                    result.success(code)
-                }
-            }
+    private fun closeTransport() {
+        try { transport?.close() } catch (_: Exception) {}
+        transport = null
+        connectionType = null
+        connectionInfo = null
     }
 
-    private fun getSerialNumber(
-        result: MethodChannel.Result,
-    ) {
-        TSPLPrinter(requireConnection())
-            .getSerialNumber { value ->
-                mainHandler.post {
-                    result.success(value)
-                }
-            }
-    }
+    private fun iv(m: Map<String, Any?>, key: String, def: Int = 0) =
+        (m[key] as? Number)?.toInt() ?: def
 
-    private fun getFirmwareVersion(
-        result: MethodChannel.Result,
-    ) {
-        TSPLPrinter(requireConnection())
-            .getFirmwareVersion { value ->
-                mainHandler.post {
-                    result.success(value)
-                }
-            }
-    }
+    private fun sv(m: Map<String, Any?>, key: String, def: String = "") =
+        m[key]?.toString() ?: def
 
-    private fun printPosText(
-        call: MethodCall,
-        result: MethodChannel.Result,
-    ) {
-        val printer =
-            POSPrinter(requireConnection())
-                .initializePrinter()
-                .printString(
-                    call.argument<String>("text") ?: ""
-                )
+    private fun q(value: String) =
+        "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", " ").replace("\n", " ") + "\""
 
-        val feedLines =
-            call.argument<Int>("feedLines") ?: 1
+    private fun fmt(value: Double) =
+        if (value % 1.0 == 0.0) value.toInt().toString() else value.toString()
 
-        if (feedLines > 0) {
-            printer.feedLine(feedLines)
-        }
-
-        if (call.argument<Boolean>("cut") == true) {
-            printer.cutHalfAndFeed(1)
-        }
-
-        result.success(null)
-    }
-
-    private fun printPosQr(
-        call: MethodCall,
-        result: MethodChannel.Result,
-    ) {
-        val printer =
-            POSPrinter(requireConnection())
-                .initializePrinter()
-                .printQRCode(
-                    call.argument<String>("data") ?: ""
-                )
-
-        val feedLines =
-            call.argument<Int>("feedLines") ?: 1
-
-        if (feedLines > 0) {
-            printer.feedLine(feedLines)
-        }
-
-        if (call.argument<Boolean>("cut") == true) {
-            printer.cutHalfAndFeed(1)
-        }
-
-        result.success(null)
-    }
-
-    private fun algorithm(value: String?): AlgorithmType =
-        when (value?.lowercase()) {
-            "dithering" -> AlgorithmType.Dithering
-            "diffusion" -> AlgorithmType.Diffusion
-            "halftone" -> AlgorithmType.Halftone
-            "none" -> AlgorithmType.None
-            else -> AlgorithmType.Threshold
-        }
-
-    private fun intValue(
-        map: Map<String, Any?>,
-        key: String,
-        default: Int = 0,
-    ): Int =
-        (map[key] as? Number)?.toInt() ?: default
-
-    private fun stringValue(
-        map: Map<String, Any?>,
-        key: String,
-        default: String = "",
-    ): String =
-        map[key]?.toString() ?: default
-
-    override fun onAttachedToActivity(
-        binding: ActivityPluginBinding,
-    ) {
+    override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         activity = binding.activity
         activityBinding = binding
         binding.addRequestPermissionsResultListener(this)
     }
 
-    override fun onDetachedFromActivityForConfigChanges() {
-        onDetachedFromActivity()
-    }
+    override fun onDetachedFromActivityForConfigChanges() = onDetachedFromActivity()
 
-    override fun onReattachedToActivityForConfigChanges(
-        binding: ActivityPluginBinding,
-    ) {
+    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) =
         onAttachedToActivity(binding)
-    }
 
     override fun onDetachedFromActivity() {
-        activityBinding
-            ?.removeRequestPermissionsResultListener(this)
+        activityBinding?.removeRequestPermissionsResultListener(this)
         activityBinding = null
         activity = null
     }
 
+    private interface Transport : Closeable {
+        val isConnected: Boolean
+        fun write(data: ByteArray)
+    }
+
+    private class BluetoothTransport(private val socket: BluetoothSocket) : Transport {
+        private val out: OutputStream = socket.outputStream
+        override val isConnected: Boolean get() = socket.isConnected
+        override fun write(data: ByteArray) { out.write(data); out.flush() }
+        override fun close() { try { out.close() } catch (_: Exception) {}; socket.close() }
+    }
+
+    private class TcpTransport(private val socket: Socket) : Transport {
+        private val out: OutputStream = socket.getOutputStream()
+        override val isConnected: Boolean get() = socket.isConnected && !socket.isClosed
+        override fun write(data: ByteArray) { out.write(data); out.flush() }
+        override fun close() { try { out.close() } catch (_: Exception) {}; socket.close() }
+    }
+
+    private class UsbTransport(
+        private val conn: UsbDeviceConnection,
+        private val intf: UsbInterface,
+        private val ep: UsbEndpoint
+    ) : Transport {
+        override val isConnected: Boolean get() = true
+        override fun write(data: ByteArray) {
+            var offset = 0
+            while (offset < data.size) {
+                val n = minOf(16384, data.size - offset)
+                val chunk = data.copyOfRange(offset, offset + n)
+                val written = conn.bulkTransfer(ep, chunk, chunk.size, 5000)
+                if (written <= 0) throw IllegalStateException("USB bulk transfer failed")
+                offset += written
+            }
+        }
+        override fun close() {
+            try { conn.releaseInterface(intf) } catch (_: Exception) {}
+            conn.close()
+        }
+    }
+
     companion object {
-        private const val REQUEST_BLUETOOTH_PERMISSIONS = 5108
+        private const val REQUEST_BT = 5108
+        private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
     }
 }
