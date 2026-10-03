@@ -1,11 +1,13 @@
 ## 0.1.0
 
 - Initial Android release.
-- XPrinter Android SDK 3.5.8 integration.
-- Bluetooth discovery and paired-device listing.
-- Bluetooth, TCP/IP, USB, and serial connections.
-- TSPL structured label printing with text, barcode, QR, box, bar, and bitmap elements.
-- Raw TSPL, ZPL, CPCL, and arbitrary byte command support.
-- TSPL status, serial number, and firmware queries.
-- Basic ESC/POS text and QR printing.
-- Android 12+ Bluetooth permission handling without location permission.
+- Direct Bluetooth SPP printing.
+- Bluetooth paired-device listing and active discovery.
+- Direct TCP/IP printing with port 9100 default.
+- Direct USB bulk printing with Android USB permission handling.
+- Structured TSPL labels with text, barcode, QR code, box, bar, copies, label size and gap controls.
+- Raw TSPL, ZPL, CPCL and arbitrary byte command support.
+- Basic ESC/POS text and QR helpers.
+- Connection status and connection event stream.
+- Android 12+ Bluetooth support using SCAN/CONNECT permissions without location permission.
+- No external XPrinter app and no vendor SDK binary dependency.
