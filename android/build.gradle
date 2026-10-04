@@ -1,3 +1,8 @@
+plugins {
+    id "com.android.library"
+    id "org.jetbrains.kotlin.android"
+}
+
 group = "com.nafimahmed.xprinter_flutter"
 version = "1.0-SNAPSHOT"
 
@@ -7,8 +12,6 @@ allprojects {
         mavenCentral()
     }
 }
-
-apply plugin: "com.android.library"
 
 android {
     namespace = "com.nafimahmed.xprinter_flutter"
@@ -21,5 +24,11 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
     }
 }
