@@ -193,8 +193,24 @@ class XprinterFlutterPlugin : FlutterPlugin,
                 closeTransport()
                 adapter.cancelDiscovery()
                 val device = adapter.getRemoteDevice(address)
-                val socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
-                socket.connect()
+
+                var secureSocket: BluetoothSocket? = null
+                val socket = try {
+                    secureSocket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                    secureSocket.connect()
+                    secureSocket
+                } catch (secureError: Exception) {
+                    try {
+                        secureSocket?.close()
+                    } catch (_: Exception) {
+                    }
+
+                    val insecureSocket =
+                        device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
+                    insecureSocket.connect()
+                    insecureSocket
+                }
+
                 transport = BluetoothTransport(socket)
                 connectionType = "bluetooth"
                 connectionInfo = address
