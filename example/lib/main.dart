@@ -13,14 +13,14 @@ class ExampleApp extends StatefulWidget {
 
 class _ExampleAppState extends State<ExampleApp> {
   final printer = XPrinterFlutter.instance;
+  final messengerKey = GlobalKey<ScaffoldMessengerState>();
 
   List<XPrinterDevice> devices = const [];
   String status = 'Disconnected';
   bool busy = false;
 
   void showMessage(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    messengerKey.currentState?.showSnackBar(
       SnackBar(content: Text(message)),
     );
   }
@@ -188,6 +188,7 @@ class _ExampleAppState extends State<ExampleApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      scaffoldMessengerKey: messengerKey,
       home: Scaffold(
         appBar: AppBar(
           title: const Text('xprinter_flutter - XP-365B test'),
