@@ -194,22 +194,7 @@ class XprinterFlutterPlugin : FlutterPlugin,
                 adapter.cancelDiscovery()
                 val device = adapter.getRemoteDevice(address)
 
-                var secureSocket: BluetoothSocket? = null
-                val socket = try {
-                    secureSocket = device.createRfcommSocketToServiceRecord(SPP_UUID)
-                    secureSocket.connect()
-                    secureSocket
-                } catch (secureError: Exception) {
-                    try {
-                        secureSocket?.close()
-                    } catch (_: Exception) {
-                    }
-
-                    val insecureSocket =
-                        device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
-                    insecureSocket.connect()
-                    insecureSocket
-                }
+                val socket = connectClassicRfcomm(device)
 
                 transport = BluetoothTransport(socket)
                 connectionType = "bluetooth"
@@ -222,6 +207,56 @@ class XprinterFlutterPlugin : FlutterPlugin,
                     result.error("connect_failed", e.message ?: "Bluetooth connection failed", null)
                 }
             }
+        }
+    }
+
+    private fun connectClassicRfcomm(device: BluetoothDevice): BluetoothSocket {
+        var firstError: Exception? = null
+        var secondError: Exception? = null
+
+        try {
+            val secure = device.createRfcommSocketToServiceRecord(SPP_UUID)
+            try {
+                secure.connect()
+                return secure
+            } catch (e: Exception) {
+                firstError = e
+                try { secure.close() } catch (_: Exception) {}
+            }
+
+            val insecure = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
+            try {
+                insecure.connect()
+                return insecure
+            } catch (e: Exception) {
+                secondError = e
+                try { insecure.close() } catch (_: Exception) {}
+            }
+
+            // Some XPrinter classic Bluetooth modules (including XP-365B variants)
+            // expose SPP on RFCOMM channel 1 but do not complete SDP UUID lookup
+            // reliably on newer Android versions. Try the fixed RFCOMM channel as
+            // a final compatibility fallback.
+            val method = device.javaClass.getMethod(
+                "createRfcommSocket",
+                Int::class.javaPrimitiveType
+            )
+            val channelSocket = method.invoke(device, 1) as BluetoothSocket
+            try {
+                channelSocket.connect()
+                return channelSocket
+            } catch (e: Exception) {
+                try { channelSocket.close() } catch (_: Exception) {}
+                throw e
+            }
+        } catch (finalError: Exception) {
+            val details = buildString {
+                append("Bluetooth RFCOMM connection failed")
+                firstError?.message?.let { append("; secure: ").append(it) }
+                secondError?.message?.let { append("; insecure: ").append(it) }
+                finalError.message?.let { append("; channel1: ").append(it) }
+            }
+            throw IllegalStateException(details, finalError)
         }
     }
 
