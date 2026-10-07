@@ -1,3 +1,10 @@
+## 0.1.1
+
+- Added TSPL gap sensor calibration with `calibrateGapSensor()`.
+- Updated the XP-365B example with configurable label width, height, and gap.
+- Simplified the TSPL diagnostic label to avoid unrelated QR/barcode variables while troubleshooting media errors.
+- Added guidance for post-print ERROR light issues caused by label/gap sensor mismatch.
+
 ## 0.1.0
 
 - Initial Android release.
