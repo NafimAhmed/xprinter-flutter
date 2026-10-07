@@ -169,6 +169,34 @@ await printer.printTsplLabel(
 
 TSPL element coordinates are printer dots. Label width, height and gap are in millimetres.
 
+### XP-365B safe stored-settings mode
+
+If your XP-365B prints one label and then latches the ERROR light when a job sends
+`SIZE`, `GAP`, or other printer configuration commands, use the printer's saved
+settings for each print job:
+
+```dart
+await printer.printTsplLabel(
+  const TsplLabel(
+    widthMm: 60,
+    heightMm: 40,
+    useStoredPrinterSettings: true,
+    elements: [
+      TsplText(
+        x: 20,
+        y: 20,
+        text: 'Express ERP',
+      ),
+    ],
+  ),
+);
+```
+
+When `useStoredPrinterSettings: true`, the job does **not** send `SIZE`, `GAP`,
+`OFFSET`, `SPEED`, `DENSITY`, `DIRECTION`, or `REFERENCE`. The printer's
+already-saved media and print configuration is left untouched. The width/height fields
+remain required by the generic label model but are not transmitted in this mode.
+
 ## Gap sensor calibration
 
 For die-cut labels, the printer must be able to detect the physical gap between labels.

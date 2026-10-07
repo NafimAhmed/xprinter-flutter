@@ -381,17 +381,28 @@ class XprinterFlutterPlugin : FlutterPlugin,
         val referenceY = call.argument<Int>("referenceY") ?: 0
         val copies = (call.argument<Int>("copies") ?: 1).coerceAtLeast(1)
         val clear = call.argument<Boolean>("clearBeforePrint") ?: true
+        val useStoredPrinterSettings =
+            call.argument<Boolean>("useStoredPrinterSettings") ?: false
         val offset = call.argument<Number>("offsetMm")?.toDouble()
         val elements = call.argument<List<Map<String, Any?>>>("elements") ?: emptyList()
 
         val out = StringBuilder()
-        out.append("SIZE ").append(fmt(width)).append(" mm,").append(fmt(height)).append(" mm\r\n")
-        out.append("GAP ").append(fmt(gap)).append(" mm,").append(fmt(gapOffset)).append(" mm\r\n")
-        if (offset != null) out.append("OFFSET ").append(fmt(offset)).append(" mm\r\n")
-        out.append("SPEED ").append(fmt(speed)).append("\r\n")
-        out.append("DENSITY ").append(density).append("\r\n")
-        out.append("DIRECTION ").append(direction).append("\r\n")
-        out.append("REFERENCE ").append(referenceX).append(",").append(referenceY).append("\r\n")
+
+        // Some XPrinter firmware variants (observed on XP-365B) can enter a
+        // latched ERROR state when media/printer configuration is overwritten
+        // for every print job. In stored-settings mode we intentionally emit
+        // only drawing commands plus PRINT, matching the printer's known-good
+        // saved configuration.
+        if (!useStoredPrinterSettings) {
+            out.append("SIZE ").append(fmt(width)).append(" mm,").append(fmt(height)).append(" mm\r\n")
+            out.append("GAP ").append(fmt(gap)).append(" mm,").append(fmt(gapOffset)).append(" mm\r\n")
+            if (offset != null) out.append("OFFSET ").append(fmt(offset)).append(" mm\r\n")
+            out.append("SPEED ").append(fmt(speed)).append("\r\n")
+            out.append("DENSITY ").append(density).append("\r\n")
+            out.append("DIRECTION ").append(direction).append("\r\n")
+            out.append("REFERENCE ").append(referenceX).append(",").append(referenceY).append("\r\n")
+        }
+
         if (clear) out.append("CLS\r\n")
 
         for (e in elements) {

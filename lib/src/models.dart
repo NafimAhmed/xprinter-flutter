@@ -214,6 +214,7 @@ class TsplLabel {
     this.referenceY = 0,
     this.copies = 1,
     this.clearBeforePrint = true,
+    this.useStoredPrinterSettings = false,
   });
 
   final double widthMm;
@@ -230,6 +231,14 @@ class TsplLabel {
   final int copies;
   final bool clearBeforePrint;
 
+  /// When true, the print job does not send SIZE, GAP, OFFSET, SPEED,
+  /// DENSITY, DIRECTION, or REFERENCE commands. The printer's currently
+  /// stored media and print settings are used instead.
+  ///
+  /// This is useful for printer firmware that enters an error state when
+  /// media configuration commands are sent with every job.
+  final bool useStoredPrinterSettings;
+
   Map<String, Object?> toMap() => {
         'widthMm': widthMm,
         'heightMm': heightMm,
@@ -243,6 +252,7 @@ class TsplLabel {
         'referenceY': referenceY,
         'copies': copies,
         'clearBeforePrint': clearBeforePrint,
+        'useStoredPrinterSettings': useStoredPrinterSettings,
         'elements': elements.map((e) => e.toMap()).toList(growable: false),
       };
 }

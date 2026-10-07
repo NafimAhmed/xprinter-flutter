@@ -271,45 +271,45 @@ class _ExampleAppState extends State<ExampleApp> {
     if (!await ensureConnected()) return;
 
     try {
-      final width = readPositiveMm(widthController, 'Label width');
-      final height = readPositiveMm(heightController, 'Label height');
-      final gap = readGapMm();
-
       setState(() {
         busy = true;
-        status = 'Sending TSPL label...';
+        status = 'Sending SAFE XP-365B TSPL label...';
       });
 
-      await printer.printTsplRaw(
-        'SIZE ${formatMm(width)} mm,${formatMm(height)} mm\r\n'
-        'GAP ${formatMm(gap)} mm,0 mm\r\n'
-        'SPEED 3\r\n'
-        'DENSITY 7\r\n'
-        'DIRECTION 1,0\r\n'
-        'REFERENCE 0,0\r\n'
-        'CLS\r\n'
-        'TEXT 20,20,"3",0,1,1,"XP-365B TEST"\r\n'
-        'TEXT 20,60,"3",0,1,1,"xprinter_flutter"\r\n'
-        'PRINT 1,1\r\n',
+      await printer.printTsplLabel(
+        const TsplLabel(
+          // Required by the generic label model, but intentionally NOT sent
+          // to the printer when useStoredPrinterSettings is true.
+          widthMm: 60,
+          heightMm: 40,
+          useStoredPrinterSettings: true,
+          elements: [
+            TsplText(
+              x: 20,
+              y: 20,
+              text: 'XP-365B SAFE TEST',
+            ),
+            TsplText(
+              x: 20,
+              y: 60,
+              text: 'STORED SETTINGS',
+            ),
+          ],
+        ),
       );
 
       if (!mounted) return;
-      setState(
-        () => status =
-            'TSPL sent: ${formatMm(width)} x ${formatMm(height)} mm, gap ${formatMm(gap)} mm',
+      setState(() => status = 'SAFE TSPL print sent using stored printer settings');
+      showMessage(
+        'Safe print sent. No SIZE/GAP/SPEED/DENSITY/DIRECTION/REFERENCE commands were sent.',
       );
-      showMessage('TSPL label sent successfully');
-    } on FormatException catch (e) {
-      if (!mounted) return;
-      setState(() => status = 'Media setting error: ${e.message}');
-      showMessage(status);
     } on PlatformException catch (e) {
       if (!mounted) return;
-      setState(() => status = 'TSPL error: ${e.message ?? e.code}');
+      setState(() => status = 'SAFE TSPL error: ${e.message ?? e.code}');
       showMessage(status);
     } catch (e) {
       if (!mounted) return;
-      setState(() => status = 'TSPL error: $e');
+      setState(() => status = 'SAFE TSPL error: $e');
       showMessage(status);
     } finally {
       if (mounted) setState(() => busy = false);
@@ -518,7 +518,8 @@ class _ExampleAppState extends State<ExampleApp> {
                       '• Test 1 OK, normal TSPL gives ERROR = gap sensor/media detection issue.\n'
                       '• Test 1 also gives ERROR = not just the gap setting.\n'
                       '• Test 2 gives ERROR = printer saved media setting/sensor state is bad.\n'
-                      '• Test 3 alone gives ERROR = media sensor cannot find the next label.',
+                      '• Test 3 alone gives ERROR = media sensor cannot find the next label.\n'
+                      '• Your current result (Test 1 ERROR, Test 2/3 OK) means stored-settings mode is the safe path.',
                     ),
                   ],
                 ),
@@ -527,7 +528,7 @@ class _ExampleAppState extends State<ExampleApp> {
             const SizedBox(height: 12),
             FilledButton(
               onPressed: busy ? null : printTsplDemo,
-              child: const Text('Normal TSPL label test'),
+              child: const Text('SAFE XP-365B print (stored settings)'),
             ),
             const SizedBox(height: 10),
             OutlinedButton(

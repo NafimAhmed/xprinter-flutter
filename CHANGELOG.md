@@ -1,3 +1,10 @@
+## 0.1.2
+
+- Added `useStoredPrinterSettings` for TSPL labels.
+- In stored-settings mode, print jobs do not overwrite media or printer configuration.
+- Updated the XP-365B example to use the proven stored-settings path after diagnostic testing.
+- Kept the isolated diagnostic tests for identifying media-command related ERROR light issues.
+
 ## 0.1.1
 
 - Added TSPL gap sensor calibration with `calibrateGapSensor()`.
