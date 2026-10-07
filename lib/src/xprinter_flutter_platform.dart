@@ -125,6 +125,36 @@ class XPrinterFlutter {
   Future<void> printTsplRaw(String command) =>
       printRawText(command);
 
+  /// Calibrates the TSPL gap sensor.
+  ///
+  /// With no arguments the printer automatically detects the paper and gap
+  /// lengths. Optional values are expressed in printer dots, matching the
+  /// TSPL GAPDETECT command.
+  Future<void> calibrateGapSensor({
+    int? paperLengthDots,
+    int? gapLengthDots,
+  }) {
+    final hasPaper = paperLengthDots != null;
+    final hasGap = gapLengthDots != null;
+
+    if (hasPaper != hasGap) {
+      throw ArgumentError(
+        'paperLengthDots and gapLengthDots must be provided together.',
+      );
+    }
+
+    if (paperLengthDots != null &&
+        (paperLengthDots <= 0 || gapLengthDots! <= 0)) {
+      throw ArgumentError('Calibration values must be greater than zero.');
+    }
+
+    final command = paperLengthDots == null
+        ? 'GAPDETECT\r\n'
+        : 'GAPDETECT $paperLengthDots,$gapLengthDots\r\n';
+
+    return printTsplRaw(command);
+  }
+
   Future<void> printZplRaw(String command) =>
       printRawText(command);
 
