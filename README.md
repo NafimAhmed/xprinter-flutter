@@ -169,6 +169,31 @@ await printer.printTsplLabel(
 
 TSPL element coordinates are printer dots. Label width, height and gap are in millimetres.
 
+## Gap sensor calibration
+
+For die-cut labels, the printer must be able to detect the physical gap between labels.
+Calibrate after changing a roll, or when a label prints successfully and the printer then
+stops with the ERROR light on.
+
+```dart
+await printer.calibrateGapSensor();
+```
+
+This sends TSPL `GAPDETECT` without parameters, so the printer automatically detects
+the paper and gap lengths. Calibration feeds labels while the sensor measures the media.
+
+The `widthMm`, `heightMm`, and `gapMm` values used for printing must match the
+actual label stock. For continuous paper use `gapMm: 0`.
+
+You can also provide approximate paper and gap lengths in printer dots:
+
+```dart
+await printer.calibrateGapSensor(
+  paperLengthDots: 320,
+  gapLengthDots: 16,
+);
+```
+
 ## Raw TSPL
 
 Use this when you need a command that is not represented by the structured API:
