@@ -35,9 +35,8 @@ From GitHub:
 
 ```yaml
 dependencies:
-  xprinter_flutter:
-    git:
-      url: https://github.com/NafimAhmed/xprinter-flutter.git
+  xprinter_flutter: 0.1.2
+    
 ```
 
 Then:

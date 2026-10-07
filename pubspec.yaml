@@ -1,6 +1,6 @@
 name: xprinter_flutter
 description: Direct Android printing for XPrinter label and POS printers over Bluetooth, TCP/IP, and USB with TSPL, ZPL, CPCL, and ESC/POS support.
-version: 0.1.0
+version: 0.1.2
 homepage: https://github.com/NafimAhmed/xprinter-flutter
 repository: https://github.com/NafimAhmed/xprinter-flutter
 issue_tracker: https://github.com/NafimAhmed/xprinter-flutter/issues
