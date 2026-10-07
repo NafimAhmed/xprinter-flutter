@@ -158,6 +158,115 @@ class _ExampleAppState extends State<ExampleApp> {
     }
   }
 
+  Future<void> printContinuousMediaTest() async {
+    if (!await ensureConnected()) return;
+
+    try {
+      final width = readPositiveMm(widthController, 'Label width');
+      final height = readPositiveMm(heightController, 'Label height');
+
+      setState(() {
+        busy = true;
+        status = 'TEST: printing with gap sensor disabled...';
+      });
+
+      await printer.printTsplRaw(
+        'SIZE ${formatMm(width)} mm,${formatMm(height)} mm\r\n'
+        'GAP 0,0\r\n'
+        'SPEED 2\r\n'
+        'DENSITY 6\r\n'
+        'DIRECTION 1,0\r\n'
+        'REFERENCE 0,0\r\n'
+        'CLS\r\n'
+        'TEXT 20,20,"3",0,1,1,"CONTINUOUS TEST"\r\n'
+        'TEXT 20,60,"3",0,1,1,"GAP SENSOR OFF"\r\n'
+        'PRINT 1,1\r\n',
+      );
+
+      if (!mounted) return;
+      setState(() => status = 'Continuous-media test sent');
+      showMessage(
+        'Test sent. If ERROR light stays OFF, the gap/media sensor path is the problem.',
+      );
+    } on FormatException catch (e) {
+      if (!mounted) return;
+      setState(() => status = 'Media setting error: ${e.message}');
+      showMessage(status);
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      setState(() => status = 'Continuous test error: ${e.message ?? e.code}');
+      showMessage(status);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => status = 'Continuous test error: $e');
+      showMessage(status);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> printStoredMediaTest() async {
+    if (!await ensureConnected()) return;
+
+    try {
+      setState(() {
+        busy = true;
+        status = 'TEST: printing with stored printer settings...';
+      });
+
+      await printer.printTsplRaw(
+        'CLS\r\n'
+        'TEXT 20,20,"3",0,1,1,"STORED MEDIA TEST"\r\n'
+        'PRINT 1,1\r\n',
+      );
+
+      if (!mounted) return;
+      setState(() => status = 'Stored-media test sent');
+      showMessage(
+        'Test sent without SIZE/GAP commands. This uses the printer\'s saved media settings.',
+      );
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      setState(() => status = 'Stored-media test error: ${e.message ?? e.code}');
+      showMessage(status);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => status = 'Stored-media test error: $e');
+      showMessage(status);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> feedOneLabelTest() async {
+    if (!await ensureConnected()) return;
+
+    try {
+      setState(() {
+        busy = true;
+        status = 'TEST: feeding to next label...';
+      });
+
+      await printer.printTsplRaw('FORMFEED\r\n');
+
+      if (!mounted) return;
+      setState(() => status = 'FORMFEED test sent');
+      showMessage(
+        'If FORMFEED alone turns the ERROR light on, the problem is media/sensor related.',
+      );
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      setState(() => status = 'Feed test error: ${e.message ?? e.code}');
+      showMessage(status);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => status = 'Feed test error: $e');
+      showMessage(status);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   Future<void> printTsplDemo() async {
     if (!await ensureConnected()) return;
 
@@ -369,9 +478,56 @@ class _ExampleAppState extends State<ExampleApp> {
               ),
             ),
             const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text(
+                      'ERROR LIGHT DIAGNOSTIC',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Restart the printer first. Then run these tests ONE BY ONE. '
+                      'Do not calibrate before Test 1.',
+                    ),
+                    const SizedBox(height: 12),
+                    FilledButton.icon(
+                      onPressed: busy ? null : printContinuousMediaTest,
+                      icon: const Icon(Icons.science_outlined),
+                      label: const Text('TEST 1 - Print with GAP SENSOR OFF'),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton(
+                      onPressed: busy ? null : printStoredMediaTest,
+                      child: const Text('TEST 2 - Print with stored media settings'),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton(
+                      onPressed: busy ? null : feedOneLabelTest,
+                      child: const Text('TEST 3 - FORMFEED only'),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Result guide:\n'
+                      '• Test 1 OK, normal TSPL gives ERROR = gap sensor/media detection issue.\n'
+                      '• Test 1 also gives ERROR = not just the gap setting.\n'
+                      '• Test 2 gives ERROR = printer saved media setting/sensor state is bad.\n'
+                      '• Test 3 alone gives ERROR = media sensor cannot find the next label.',
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
             FilledButton(
               onPressed: busy ? null : printTsplDemo,
-              child: const Text('Print TSPL label test'),
+              child: const Text('Normal TSPL label test'),
             ),
             const SizedBox(height: 10),
             OutlinedButton(
