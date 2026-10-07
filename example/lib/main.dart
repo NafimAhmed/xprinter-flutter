@@ -15,6 +15,10 @@ class _ExampleAppState extends State<ExampleApp> {
   final printer = XPrinterFlutter.instance;
   final messengerKey = GlobalKey<ScaffoldMessengerState>();
 
+  final widthController = TextEditingController(text: '60');
+  final heightController = TextEditingController(text: '40');
+  final gapController = TextEditingController(text: '2');
+
   List<XPrinterDevice> devices = const [];
   String status = 'Disconnected';
   bool busy = false;
@@ -23,6 +27,32 @@ class _ExampleAppState extends State<ExampleApp> {
     messengerKey.currentState?.showSnackBar(
       SnackBar(content: Text(message)),
     );
+  }
+
+  double readPositiveMm(
+    TextEditingController controller,
+    String fieldName,
+  ) {
+    final value = double.tryParse(controller.text.trim());
+    if (value == null || value <= 0) {
+      throw FormatException('$fieldName must be greater than 0 mm');
+    }
+    return value;
+  }
+
+  double readGapMm() {
+    final value = double.tryParse(gapController.text.trim());
+    if (value == null || value < 0) {
+      throw const FormatException('Gap must be 0 mm or greater');
+    }
+    return value;
+  }
+
+  String formatMm(double value) {
+    if (value == value.roundToDouble()) {
+      return value.toInt().toString();
+    }
+    return value.toString();
   }
 
   Future<void> loadPrinters() async {
@@ -92,40 +122,78 @@ class _ExampleAppState extends State<ExampleApp> {
   Future<bool> ensureConnected() async {
     final connected = await printer.isConnected();
     if (!connected) {
+      if (!mounted) return false;
       setState(() => status = 'Printer is not connected');
       showMessage('Connect XP-365B first');
     }
     return connected;
   }
 
+  Future<void> calibrateGapSensor() async {
+    if (!await ensureConnected()) return;
+
+    try {
+      setState(() {
+        busy = true;
+        status = 'Calibrating gap sensor...';
+      });
+
+      await printer.calibrateGapSensor();
+
+      if (!mounted) return;
+      setState(() => status = 'Gap sensor calibration command sent');
+      showMessage(
+        'Calibration sent. Let the printer finish feeding labels before printing.',
+      );
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      setState(() => status = 'Calibration error: ${e.message ?? e.code}');
+      showMessage(status);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => status = 'Calibration error: $e');
+      showMessage(status);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   Future<void> printTsplDemo() async {
     if (!await ensureConnected()) return;
 
     try {
+      final width = readPositiveMm(widthController, 'Label width');
+      final height = readPositiveMm(heightController, 'Label height');
+      final gap = readGapMm();
+
       setState(() {
         busy = true;
         status = 'Sending TSPL label...';
       });
 
       await printer.printTsplRaw(
-        'SIZE 60 mm,40 mm\r\n'
-        'GAP 2 mm,0 mm\r\n'
-        'SPEED 4\r\n'
-        'DENSITY 8\r\n'
-        'DIRECTION 1\r\n'
+        'SIZE ${formatMm(width)} mm,${formatMm(height)} mm\r\n'
+        'GAP ${formatMm(gap)} mm,0 mm\r\n'
+        'SPEED 3\r\n'
+        'DENSITY 7\r\n'
+        'DIRECTION 1,0\r\n'
+        'REFERENCE 0,0\r\n'
         'CLS\r\n'
         'TEXT 20,20,"3",0,1,1,"XP-365B TEST"\r\n'
         'TEXT 20,60,"3",0,1,1,"xprinter_flutter"\r\n'
-        'QRCODE 20,100,M,4,A,0,"XP365B-TEST-001"\r\n'
-        'BARCODE 180,100,"128",60,1,0,2,2,"1234567890"\r\n'
         'PRINT 1,1\r\n',
       );
 
       if (!mounted) return;
-      setState(() => status = 'TSPL data sent successfully');
-      showMessage(
-        'TSPL sent. If nothing prints, switch XP-365B to LABEL mode.',
+      setState(
+        () => status =
+            'TSPL sent: ${formatMm(width)} x ${formatMm(height)} mm, gap ${formatMm(gap)} mm',
       );
+      showMessage('TSPL label sent successfully');
+    } on FormatException catch (e) {
+      if (!mounted) return;
+      setState(() => status = 'Media setting error: ${e.message}');
+      showMessage(status);
     } on PlatformException catch (e) {
       if (!mounted) return;
       setState(() => status = 'TSPL error: ${e.message ?? e.code}');
@@ -179,10 +247,36 @@ class _ExampleAppState extends State<ExampleApp> {
     setState(() => status = 'Disconnected');
   }
 
+  Widget mediaField(
+    String label,
+    TextEditingController controller,
+  ) {
+    return Expanded(
+      child: TextField(
+        controller: controller,
+        enabled: !busy,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        decoration: InputDecoration(
+          labelText: label,
+          suffixText: 'mm',
+          border: const OutlineInputBorder(),
+        ),
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
     loadPrinters();
+  }
+
+  @override
+  void dispose() {
+    widthController.dispose();
+    heightController.dispose();
+    gapController.dispose();
+    super.dispose();
   }
 
   @override
@@ -231,6 +325,50 @@ class _ExampleAppState extends State<ExampleApp> {
               ),
             ),
             const Divider(height: 32),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Label media',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Enter the real sticker width, height and physical gap. '
+                      'Wrong media values can make the XP-365B stop with the ERROR light on.',
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        mediaField('Width', widthController),
+                        const SizedBox(width: 8),
+                        mediaField('Height', heightController),
+                        const SizedBox(width: 8),
+                        mediaField('Gap', gapController),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: busy ? null : calibrateGapSensor,
+                      icon: const Icon(Icons.tune),
+                      label: const Text('Calibrate gap sensor'),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Run calibration after changing the label roll or if the ERROR light appears after a print. '
+                      'Calibration feeds labels while the sensor detects the media.',
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
             FilledButton(
               onPressed: busy ? null : printTsplDemo,
               child: const Text('Print TSPL label test'),
@@ -249,9 +387,10 @@ class _ExampleAppState extends State<ExampleApp> {
             const Text(
               'Diagnosis:\n'
               '1. Connect XP-365B first.\n'
-              '2. If TSPL prints: label mode is working.\n'
-              '3. If ESC/POS prints but TSPL does not: switch printer to LABEL mode.\n'
-              '4. If neither prints but app says Connected: Bluetooth transport/firmware needs further checking.',
+              '2. Enter the actual label size and gap.\n'
+              '3. Run Calibrate gap sensor and wait until feeding stops.\n'
+              '4. Print the TSPL label test.\n'
+              '5. If ESC/POS prints but TSPL does not, verify that the printer is in LABEL mode.',
             ),
           ],
         ),
