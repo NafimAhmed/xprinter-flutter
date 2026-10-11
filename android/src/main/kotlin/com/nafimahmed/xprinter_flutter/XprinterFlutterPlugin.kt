@@ -150,8 +150,14 @@ class XprinterFlutterPlugin : FlutterPlugin,
                 "testPrint" -> {
                     val width = call.argument<Number>("widthMm")?.toDouble() ?: 60.0
                     val height = call.argument<Number>("heightMm")?.toDouble() ?: 40.0
-                    val cmd = "SIZE " + fmt(width) + " mm," + fmt(height) + " mm\r\n" +
-                        "GAP 2 mm,0 mm\r\nDENSITY 8\r\nCLS\r\n" +
+                    val stored = call.argument<Boolean>("useStoredPrinterSettings") ?: true
+                    require(width.isFinite() && width > 0 && height.isFinite() && height > 0) {
+                        "Label dimensions must be finite and positive"
+                    }
+                    // Default to stored settings, safe for XP-365B media calibration.
+                    val config = if (stored) "" else
+                        "SIZE " + fmt(width) + " mm," + fmt(height) + " mm\r\nGAP 2 mm,0 mm\r\n"
+                    val cmd = config + "CLS\r\n" +
                         "TEXT 20,20,\"3\",0,1,1,\"xprinter_flutter\"\r\n" +
                         "QRCODE 20,70,M,5,A,0,\"https://github.com/NafimAhmed/xprinter-flutter\"\r\n" +
                         "PRINT 1,1\r\n"
@@ -425,6 +431,19 @@ class XprinterFlutterPlugin : FlutterPlugin,
             call.argument<Boolean>("useStoredPrinterSettings") ?: false
         val offset = call.argument<Number>("offsetMm")?.toDouble()
         val elements = call.argument<List<Map<String, Any?>>>("elements") ?: emptyList()
+        require(width.isFinite() && width > 0 && width <= 500 &&
+                height.isFinite() && height > 0 && height <= 500) {
+            "Label size must be finite and between 0 and 500 mm"
+        }
+        require(gap.isFinite() && gap >= 0 && gapOffset.isFinite() && gapOffset >= 0 &&
+                (offset == null || (offset.isFinite() && offset >= 0))) {
+            "Gap and offset must be finite and non-negative"
+        }
+        require(speed.isFinite() && speed > 0 && speed <= 20 && density in 0..15 &&
+                direction in 0..1 && copies in 1..999) {
+            "Invalid TSPL speed/density/direction/copies"
+        }
+
 
         val out = StringBuilder()
 
