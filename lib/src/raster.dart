@@ -125,12 +125,12 @@ Uint8List buildTsplRasterCommand({
       final int sourceX;
       final int sourceY;
       if (rotate) {
-        sourceX = ((y * sourceWidth) ~/ outHeight).clamp(0, sourceWidth - 1);
+        sourceX = ((y * sourceWidth) ~/ outHeight).clamp(0, sourceWidth - 1).toInt();
         sourceY = sourceHeight - 1 -
-            ((x * sourceHeight) ~/ outWidth).clamp(0, sourceHeight - 1);
+            ((x * sourceHeight) ~/ outWidth).clamp(0, sourceHeight - 1).toInt();
       } else {
-        sourceX = ((x * sourceWidth) ~/ outWidth).clamp(0, sourceWidth - 1);
-        sourceY = ((y * sourceHeight) ~/ outHeight).clamp(0, sourceHeight - 1);
+        sourceX = ((x * sourceWidth) ~/ outWidth).clamp(0, sourceWidth - 1).toInt();
+        sourceY = ((y * sourceHeight) ~/ outHeight).clamp(0, sourceHeight - 1).toInt();
       }
 
       final index = (sourceY * sourceWidth + sourceX) * 4;
