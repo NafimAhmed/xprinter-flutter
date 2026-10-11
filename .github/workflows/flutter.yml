@@ -1,0 +1,31 @@
+name: Flutter plugin checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  analyze-test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Resolve plugin dependencies
+        run: flutter pub get
+      - name: Analyze plugin
+        run: flutter analyze
+      - name: Unit tests
+        run: flutter test
+      - name: Resolve example dependencies
+        working-directory: example
+        run: flutter pub get
+      - name: Example widget tests
+        working-directory: example
+        run: flutter test
+      - name: Build Android example
+        working-directory: example
+        run: flutter build apk --debug

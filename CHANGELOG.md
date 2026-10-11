@@ -1,3 +1,17 @@
+## 0.2.0 (unreleased, pending hardware validation)
+
+- Add direct `printPdf()`, `printImage()`, and `printRgbaImage()` APIs.
+- Add configurable bitmap rotation, fit, threshold, bit polarity, copies,
+  and a tested XP-365B 75x100 mm preset.
+- Move RGBA-to-TSPL conversion to a background isolate.
+- Fix Android 14+ USB mutable PendingIntent restriction.
+- Serialize disconnect/write operations and invalidate connections after write failures.
+- Request only required Bluetooth permissions for paired-device connection.
+- Add in-process printer reconnect API (never auto-replays print data).
+- Default diagnostic test prints to stored media settings for XP-365B.
+- Fix stale example widget test and remove redundant Android manifest permissions.
+- Add encoder tests and Flutter CI checks.
+
 ## 0.1.2
 
 - Added `useStoredPrinterSettings` for TSPL labels.
