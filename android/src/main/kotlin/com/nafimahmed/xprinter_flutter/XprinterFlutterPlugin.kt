@@ -49,6 +49,7 @@ class XprinterFlutterPlugin : FlutterPlugin,
     private var activity: Activity? = null
     private var activityBinding: ActivityPluginBinding? = null
     private var permissionResult: MethodChannel.Result? = null
+    private var usbPermissionReceiver: BroadcastReceiver? = null
 
     private var scanSink: EventChannel.EventSink? = null
     private var connectionSink: EventChannel.EventSink? = null
@@ -96,6 +97,12 @@ class XprinterFlutterPlugin : FlutterPlugin,
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         stopScan()
+        usbPermissionReceiver?.let {
+            try { context.unregisterReceiver(it) } catch (_: Exception) {}
+        }
+        usbPermissionReceiver = null
+        permissionResult?.error("detached", "Printer plugin detached", null)
+        permissionResult = null
         closeTransport()
         executor.shutdownNow()
         methods.setMethodCallHandler(null)
@@ -107,7 +114,7 @@ class XprinterFlutterPlugin : FlutterPlugin,
         try {
             when (call.method) {
                 "platformVersion" -> result.success("Android " + Build.VERSION.RELEASE)
-                "requestBluetoothPermissions" -> requestBluetoothPermissions(result)
+                "requestBluetoothPermissions" -> requestBluetoothPermissions(result, call.argument<Boolean>("forScanning") == true)
                 "getBondedBluetoothDevices" -> result.success(bondedDevices())
                 "startBluetoothScan" -> result.success(startScan())
                 "stopBluetoothScan" -> { stopScan(); result.success(null) }
@@ -127,7 +134,7 @@ class XprinterFlutterPlugin : FlutterPlugin,
                     result
                 )
                 "connectSerial" -> result.error("unsupported", "Serial transport is not implemented yet", null)
-                "disconnect" -> { closeTransport(); emit(false, 0, null, "Disconnected"); result.success(null) }
+                "disconnect" -> disconnectAsync(result)
                 "isConnected" -> result.success(transport?.isConnected == true)
                 "getConnectionInfo" -> result.success(mapOf(
                     "connected" to (transport?.isConnected == true),
@@ -178,8 +185,8 @@ class XprinterFlutterPlugin : FlutterPlugin,
     }
 
     private fun connectBluetooth(address: String, result: MethodChannel.Result) {
-        if (!hasBluetoothPermissions()) {
-            result.error("permission_denied", "Bluetooth permissions are not granted", null)
+        if (!hasBluetoothPermissions(forScanning = false)) {
+            result.error("permission_denied", "Bluetooth CONNECT permission is not granted", null)
             return
         }
         val adapter = bluetooth ?: return result.error("bluetooth_unavailable", "Bluetooth is unavailable", null)
@@ -191,7 +198,7 @@ class XprinterFlutterPlugin : FlutterPlugin,
         executor.execute {
             try {
                 closeTransport()
-                adapter.cancelDiscovery()
+                if (hasBluetoothScanPermission()) adapter.cancelDiscovery()
                 val device = adapter.getRemoteDevice(address)
 
                 val socket = connectClassicRfcomm(device)
@@ -290,11 +297,16 @@ class XprinterFlutterPlugin : FlutterPlugin,
             return
         }
 
+        if (usbPermissionReceiver != null) {
+            result.error("request_in_progress", "Another USB permission request is active", null)
+            return
+        }
         val action = context.packageName + ".XPRINTER_USB_PERMISSION"
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context?, intent: Intent?) {
                 if (intent?.action != action) return
                 try { context.unregisterReceiver(this) } catch (_: Exception) {}
+                usbPermissionReceiver = null
 
                 val received = if (Build.VERSION.SDK_INT >= 33) {
                     intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
@@ -322,8 +334,19 @@ class XprinterFlutterPlugin : FlutterPlugin,
 
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
-        val pending = PendingIntent.getBroadcast(context, 0, Intent(action), flags)
-        usb.requestPermission(device, pending)
+        // Android 14+ disallows mutable PendingIntents with implicit intents.
+        // setPackage restricts the callback to this app while preserving USB metadata.
+        val pending = PendingIntent.getBroadcast(
+            context, 0, Intent(action).setPackage(context.packageName), flags
+        )
+        usbPermissionReceiver = receiver
+        try {
+            usb.requestPermission(device, pending)
+        } catch (e: Exception) {
+            usbPermissionReceiver = null
+            try { context.unregisterReceiver(receiver) } catch (_: Exception) {}
+            result.error("usb_permission_failed", e.message ?: "USB permission request failed", null)
+        }
     }
 
     private fun openUsb(device: UsbDevice, result: MethodChannel.Result) {
@@ -353,18 +376,35 @@ class XprinterFlutterPlugin : FlutterPlugin,
     }
 
     private fun writeAsync(data: ByteArray, result: MethodChannel.Result) {
-        val t = transport?.takeIf { it.isConnected }
-            ?: return result.error("not_connected", "No printer is connected", null)
-
+        // Resolve the active connection INSIDE the serial executor.
+        // Otherwise a queued disconnect/reconnect can invalidate an old transport.
         executor.execute {
+            val t = transport?.takeIf { it.isConnected }
+            if (t == null) {
+                main.post { result.error("not_connected", "No printer is connected", null) }
+                return@execute
+            }
             try {
                 t.write(data)
+                // This confirms transport delivery, NOT physical print completion.
                 main.post { result.success(null) }
             } catch (e: Exception) {
+                val previousInfo = connectionInfo
+                closeTransport()
                 main.post {
-                    emit(false, -2, connectionInfo, e.message)
+                    emit(false, -2, previousInfo, e.message)
                     result.error("write_failed", e.message ?: "Printer write failed", null)
                 }
+            }
+        }
+    }
+
+    private fun disconnectAsync(result: MethodChannel.Result) {
+        executor.execute {
+            closeTransport()
+            main.post {
+                emit(false, 0, null, "Disconnected")
+                result.success(null)
             }
         }
     }
@@ -473,12 +513,12 @@ class XprinterFlutterPlugin : FlutterPlugin,
     }
 
     private fun bondedDevices(): List<Map<String, Any?>> {
-        if (!hasBluetoothPermissions()) throw SecurityException("Bluetooth permissions are not granted")
+        if (!hasBluetoothPermissions(forScanning = false)) throw SecurityException("Bluetooth CONNECT permission is not granted")
         return bluetooth?.bondedDevices?.map { deviceMap(it, true, null) } ?: emptyList()
     }
 
     private fun startScan(): Boolean {
-        if (!hasBluetoothPermissions()) throw SecurityException("Bluetooth permissions are not granted")
+        if (!hasBluetoothPermissions(forScanning = true)) throw SecurityException("Bluetooth scan permissions are not granted")
         val adapter = bluetooth ?: throw IllegalStateException("Bluetooth is unavailable")
         if (!adapter.isEnabled) throw IllegalStateException("Bluetooth is disabled")
 
@@ -524,7 +564,7 @@ class XprinterFlutterPlugin : FlutterPlugin,
 
     private fun stopScan() {
         try {
-            if (hasBluetoothPermissions()) bluetooth?.takeIf { it.isDiscovering }?.cancelDiscovery()
+            if (hasBluetoothScanPermission()) bluetooth?.takeIf { it.isDiscovering }?.cancelDiscovery()
         } catch (_: Exception) {}
         scanReceiver?.let {
             try { context.unregisterReceiver(it) } catch (_: Exception) {}
@@ -532,16 +572,23 @@ class XprinterFlutterPlugin : FlutterPlugin,
         scanReceiver = null
     }
 
-    private fun hasBluetoothPermissions(): Boolean =
+    private fun hasBluetoothScanPermission(): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-                context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+            context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         } else true
 
-    private fun requestBluetoothPermissions(result: MethodChannel.Result) {
-        if (hasBluetoothPermissions()) {
+    private fun hasBluetoothPermissions(forScanning: Boolean): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
+                (!forScanning || hasBluetoothScanPermission())
+        } else if (forScanning && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            hasBluetoothScanPermission()
+        } else true
+
+    private fun requestBluetoothPermissions(result: MethodChannel.Result, forScanning: Boolean) {
+        if (hasBluetoothPermissions(forScanning)) {
             result.success(true)
             return
         }
@@ -553,7 +600,11 @@ class XprinterFlutterPlugin : FlutterPlugin,
         }
 
         val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+            if (forScanning) {
+                arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN)
+            } else {
+                arrayOf(Manifest.permission.BLUETOOTH_CONNECT)
+            }
         } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
