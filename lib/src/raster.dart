@@ -89,7 +89,7 @@ Uint8List buildTsplRasterCommand({
     throw ArgumentError('RGBA buffer is smaller than width * height * 4.');
   }
 
-  final widthDots = (options.widthMm * options.dpi / 25.4).round();
+  final widthDots = (options.widthMm * options.dpi / 25.4).ceil();
   final heightDots = (options.heightMm * options.dpi / 25.4).round();
   if (widthDots <= 0 || heightDots <= 0 ||
       widthDots > 16384 || heightDots > 16384) {
