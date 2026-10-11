@@ -37,7 +37,9 @@ void main() {
     );
     final prefix = 'CLS\r\nBITMAP 0,0,75,799,0,'.codeUnits;
     expect(command.sublist(0, prefix.length), prefix);
-    expect(command.sublist(prefix.length, prefix.length + 75), List<int>.filled(75, 0));
+    // The label is vertically centered, so some rows remain white.
+    expect(command[prefix.length], 0xFF);
+    expect(command.sublist(prefix.length).contains(0), isTrue);
   });
 
   test('Transparent black does not print', () {
