@@ -248,19 +248,20 @@ preset so the stored paper settings, bit polarity and 180° correction are kept:
 import 'dart:typed_data';
 import 'package:xprinter_flutter/xprinter_flutter.dart';
 
-final printer = XPrinterFlutter.instance;
-// Connect over Bluetooth, USB or Wi-Fi first.
-final Uint8List pdfBytes = /* your generated PDF */;
-await printer.printPdf(
-  pdfBytes,
-  options: const XPrinterRasterOptions.xp365b75x100(),
-);
+Future<void> printLabel(Uint8List pdfBytes, Uint8List imageBytes) async {
+  final printer = XPrinterFlutter.instance;
+  // Connect over Bluetooth, USB or Wi-Fi first.
+  await printer.printPdf(
+    pdfBytes,
+    options: const XPrinterRasterOptions.xp365b75x100(),
+  );
 
-// Or print a JPG/PNG with the same settings:
-await printer.printImage(
-  imageBytes,
-  options: const XPrinterRasterOptions.xp365b75x100(),
-);
+  // Or print a JPG/PNG with the same settings:
+  await printer.printImage(
+    imageBytes,
+    options: const XPrinterRasterOptions.xp365b75x100(),
+  );
+}
 ```
 
 For other TSPL printers choose dimensions, DPI, orientation and polarity
