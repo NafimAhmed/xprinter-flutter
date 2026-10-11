@@ -64,6 +64,17 @@ void main() {
     expect(String.fromCharCodes(command.take(10)), startsWith('CLS'));
   });
 
+  test('XP-365B presets can adjust copies without losing polarity', () {
+    final settings = const XPrinterRasterOptions.xp365b75x100()
+        .copyWith(copies: 3, threshold: 160);
+    expect(settings.copies, 3);
+    expect(settings.threshold, 160);
+    expect(settings.widthMm, 75);
+    expect(settings.heightMm, 100);
+    expect(settings.rotate180, isTrue);
+    expect(settings.invertedBits, isTrue);
+  });
+
   test('Encoder validates image buffers and label options', () {
     expect(
       () => buildTsplRasterCommand(
