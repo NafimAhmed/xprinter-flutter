@@ -117,7 +117,7 @@ Uint8List buildTsplRasterCommand({
   }
 
   final widthDots = (options.widthMm * options.dpi / 25.4).ceil();
-  final heightDots = (options.heightMm * options.dpi / 25.4).round();
+  final heightDots = (options.heightMm * options.dpi / 25.4).ceil();
   if (widthDots <= 0 || heightDots <= 0 ||
       widthDots > 16384 || heightDots > 16384) {
     throw ArgumentError('Requested label dimensions exceed bitmap limits.');
