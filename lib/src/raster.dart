@@ -48,6 +48,33 @@ class XPrinterRasterOptions {
   final int threshold;
   final int copies;
 
+  /// Override one or more fields while retaining a device-specific preset.
+  XPrinterRasterOptions copyWith({
+    double? widthMm,
+    double? heightMm,
+    int? dpi,
+    bool? autoRotate,
+    bool? rotate180,
+    bool? invertedBits,
+    bool? useStoredPrinterSettings,
+    double? gapMm,
+    int? threshold,
+    int? copies,
+  }) =>
+      XPrinterRasterOptions(
+        widthMm: widthMm ?? this.widthMm,
+        heightMm: heightMm ?? this.heightMm,
+        dpi: dpi ?? this.dpi,
+        autoRotate: autoRotate ?? this.autoRotate,
+        rotate180: rotate180 ?? this.rotate180,
+        invertedBits: invertedBits ?? this.invertedBits,
+        useStoredPrinterSettings:
+            useStoredPrinterSettings ?? this.useStoredPrinterSettings,
+        gapMm: gapMm ?? this.gapMm,
+        threshold: threshold ?? this.threshold,
+        copies: copies ?? this.copies,
+      );
+
   void validate() {
     if (!widthMm.isFinite || widthMm <= 0 ||
         !heightMm.isFinite || heightMm <= 0) {
