@@ -20,6 +20,11 @@ Direct Android printing for XPrinter-compatible label and POS printers from Flut
   - QR codes
   - boxes and bars
   - multiple copies
+- Direct PDF page printing (no system dialog) with 203-DPI rasterization
+- Direct PNG/JPEG and RGBA image printing
+- Auto-fit, optional 90° rotation, polarity, threshold, and orientation controls
+- Preconfigured XP-365B 75x100 mm bitmap mode
+- In-process reconnect to the last successfully connected printer
 - Raw TSPL commands
 - Raw ZPL commands
 - Raw CPCL commands
@@ -31,13 +36,19 @@ Direct Android printing for XPrinter-compatible label and POS printers from Flut
 
 ## Install
 
-From GitHub:
+From GitHub (recommended until v0.2.0 is published on pub.dev):
 
 ```yaml
 dependencies:
-  xprinter_flutter: 0.1.2
-    
+  xprinter_flutter:
+    git:
+      url: https://github.com/NafimAhmed/xprinter-flutter.git
+      ref: main
 ```
+
+When a version is published on pub.dev, you can instead use a normal
+versioned package dependency. The GitHub repository branch must contain
+the changes you want to use.
 
 Then:
 
@@ -88,6 +99,8 @@ final subscription = printer.bluetoothScanResults.listen((device) {
   print('${device.name}: ${device.address}');
 });
 
+// Active scanning needs SCAN permission in addition to CONNECT.
+if (!await printer.requestBluetoothPermissions(forScanning: true)) return;
 await printer.startBluetoothScan();
 
 // Later:
@@ -221,6 +234,71 @@ await printer.calibrateGapSensor(
 );
 ```
 
+## Direct PDF and image printing
+
+The package converts a PDF page or an encoded PNG/JPEG into RGBA pixels,
+scales the ENTIRE image to the label, and sends a binary TSPL BITMAP job.
+It does not open the Android print dialog. PDF rasterization uses the
+`printing` package; bitmap conversion runs in a background isolate.
+
+For the XP-365B 75x100 mm label tested in Express ERP, use the printer-specific
+preset so the stored paper settings, bit polarity and 180° correction are kept:
+
+```dart
+import 'dart:typed_data';
+import 'package:xprinter_flutter/xprinter_flutter.dart';
+
+final printer = XPrinterFlutter.instance;
+// Connect over Bluetooth, USB or Wi-Fi first.
+final Uint8List pdfBytes = /* your generated PDF */;
+await printer.printPdf(
+  pdfBytes,
+  options: const XPrinterRasterOptions.xp365b75x100(),
+);
+
+// Or print a JPG/PNG with the same settings:
+await printer.printImage(
+  imageBytes,
+  options: const XPrinterRasterOptions.xp365b75x100(),
+);
+```
+
+For other TSPL printers choose dimensions, DPI, orientation and polarity
+explicitly. The default options are generic and may not match your printer's
+bitmap polarity.
+
+```dart
+await printer.printPdf(
+  pdfBytes,
+  options: const XPrinterRasterOptions(
+    widthMm: 60,
+    heightMm: 40,
+    dpi: 203,
+    autoRotate: true,
+    rotate180: false,
+    invertedBits: false,
+    useStoredPrinterSettings: true,
+    copies: 1,
+  ),
+);
+```
+
+Only one PDF page per call is printed (default page index 0). These APIs
+confirm delivery to the transport, NOT that a physical label exited the printer.
+Do not automatically retry an uncertain write without checking for duplicates.
+
+### Reconnect after disconnection
+
+```dart
+final reconnected = await printer.reconnect();
+if (reconnected) {
+  // Explicitly decide whether a failed job needs to be retried.
+}
+```
+
+The last successful address/USB path is remembered only while the Flutter
+process is running, not saved permanently to device storage.
+
 ## Raw TSPL
 
 Use this when you need a command that is not represented by the structured API:
@@ -291,6 +369,7 @@ After connecting:
 await printer.testPrint(
   widthMm: 60,
   heightMm: 40,
+  useStoredPrinterSettings: true, // default; safe for XP-365B
 );
 ```
 
@@ -413,12 +492,32 @@ The transport layer is generic, but the command language still has to be support
 
 The implementation was designed against the APIs and command examples supplied with XPrinter Android SDK 3.5.8, but **no vendor AAR or proprietary binary is bundled in this repository**.
 
-## Current v0.1 limitations
+## Current limitations
 
-- Android only.
-- Serial-port transport is not included yet.
-- Vendor-specific status, firmware-version and serial-number queries are not included yet.
-- Structured TSPL bitmap/image elements are not included yet. Raw printer commands remain available for model-specific functionality.
+- Android only; native iOS/macOS/Windows transports are not implemented.
+- Serial-port transport is not included.
+- Firmware, paper-out, cover-open, and physical print-complete queries are not implemented.
+- The binary TSPL bitmap path is available through `printPdf`, `printImage`
+  and `printRgbaImage`, but there is no structured `TsplImage` element yet.
+- There is no persistent job queue or print-complete acknowledgement; callers
+  must not assume a successful write means paper was printed.
+- Direct PDF/image printing is for TSPL printers. ZPL, CPCL and ESC/POS still
+  have raw command support, but are not automatically rasterized by these APIs.
+
+## Quality checks
+
+```bash
+flutter pub get
+flutter analyze
+flutter test
+cd example
+flutter pub get
+flutter test
+flutter build apk --debug
+```
+
+The included GitHub Actions workflow runs these checks on pull requests.
+Hardware printing must still be tested on each supported printer model.
 
 ## License
 
