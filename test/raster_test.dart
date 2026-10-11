@@ -35,7 +35,7 @@ void main() {
       sourceHeight: 1,
       options: options,
     );
-    final prefix = 'CLS\r\nBITMAP 0,0,75,799,0,'.codeUnits;
+    final prefix = 'CLS\r\nBITMAP 0,0,75,800,0,'.codeUnits;
     expect(command.sublist(0, prefix.length), prefix);
     // The label is vertically centered, so some rows remain white.
     expect(command[prefix.length], 0xFF);
