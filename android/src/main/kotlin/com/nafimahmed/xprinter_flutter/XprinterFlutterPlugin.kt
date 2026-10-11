@@ -50,6 +50,7 @@ class XprinterFlutterPlugin : FlutterPlugin,
     private var activityBinding: ActivityPluginBinding? = null
     private var permissionResult: MethodChannel.Result? = null
     private var usbPermissionReceiver: BroadcastReceiver? = null
+    private var usbPermissionResult: MethodChannel.Result? = null
 
     private var scanSink: EventChannel.EventSink? = null
     private var connectionSink: EventChannel.EventSink? = null
@@ -101,6 +102,8 @@ class XprinterFlutterPlugin : FlutterPlugin,
             try { context.unregisterReceiver(it) } catch (_: Exception) {}
         }
         usbPermissionReceiver = null
+        usbPermissionResult?.error("detached", "Printer plugin detached while waiting for USB permission", null)
+        usbPermissionResult = null
         permissionResult?.error("detached", "Printer plugin detached", null)
         permissionResult = null
         closeTransport()
@@ -313,6 +316,7 @@ class XprinterFlutterPlugin : FlutterPlugin,
                 if (intent?.action != action) return
                 try { context.unregisterReceiver(this) } catch (_: Exception) {}
                 usbPermissionReceiver = null
+                usbPermissionResult = null
 
                 val received = if (Build.VERSION.SDK_INT >= 33) {
                     intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
@@ -346,10 +350,12 @@ class XprinterFlutterPlugin : FlutterPlugin,
             context, 0, Intent(action).setPackage(context.packageName), flags
         )
         usbPermissionReceiver = receiver
+        usbPermissionResult = result
         try {
             usb.requestPermission(device, pending)
         } catch (e: Exception) {
             usbPermissionReceiver = null
+            usbPermissionResult = null
             try { context.unregisterReceiver(receiver) } catch (_: Exception) {}
             result.error("usb_permission_failed", e.message ?: "USB permission request failed", null)
         }
@@ -650,6 +656,9 @@ class XprinterFlutterPlugin : FlutterPlugin,
     private fun findUsbOut(device: UsbDevice): Pair<UsbInterface, UsbEndpoint>? {
         for (i in 0 until device.interfaceCount) {
             val intf = device.getInterface(i)
+            // Never treat mass-storage / HID interfaces as generic printers.
+            if (intf.interfaceClass == UsbConstants.USB_CLASS_MASS_STORAGE ||
+                intf.interfaceClass == UsbConstants.USB_CLASS_HID) continue
             for (j in 0 until intf.endpointCount) {
                 val ep = intf.getEndpoint(j)
                 if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK &&
